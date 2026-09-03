@@ -11,6 +11,7 @@
 #include <QDBusPendingCallWatcher>
 #include <QDBusPendingReply>
 #include <QDataStream>
+#include <QRegularExpression>
 #include <QVariantMap>
 
 namespace {
@@ -51,12 +52,18 @@ NotificationManager::NotificationManager(QObject *parent)
 }
 
 void NotificationManager::showNewNetwork(const QString &deduplicationKey,
-                                         const QString &token)
+                                         const QString &token,
+                                         const QString &displayName)
 {
-    show(deduplicationKey, QStringLiteral("Wi-Fi sync needs a choice"),
-         QStringLiteral("Open Flotsam to review a newly saved network."),
+    QString safeName = displayName;
+    safeName.replace(QRegularExpression(QStringLiteral("[\\x00-\\x1f\\x7f-\\x9f]")),
+                     QStringLiteral(" "));
+    show(deduplicationKey, QStringLiteral("New Wi-Fi network found"),
+         QStringLiteral("Would you like to sync '%1'?").arg(safeName),
          QStringList() << QStringLiteral("sync:%1").arg(token) << QStringLiteral("Sync")
-                       << QStringLiteral("keep:%1").arg(token) << QStringLiteral("Keep only here"));
+                       << QStringLiteral("keep:%1").arg(token) << QStringLiteral("Keep only here"),
+         QStringLiteral("New Wi-Fi network found"),
+         QStringLiteral("Open Flotsam to choose whether to synchronize it."));
 }
 
 void NotificationManager::showAttention(const QString &deduplicationKey,
@@ -65,19 +72,21 @@ void NotificationManager::showAttention(const QString &deduplicationKey,
     Q_UNUSED(kind)
     show(deduplicationKey, QStringLiteral("Wi-Fi sync needs attention"),
          QStringLiteral("Open Flotsam to review a synchronization decision."),
-         QStringList());
+         QStringList(), QStringLiteral("Wi-Fi sync needs attention"),
+         QStringLiteral("Open Flotsam to review a synchronization decision."));
 }
 
 void NotificationManager::show(const QString &deduplicationKey, const QString &summary,
-                               const QString &body, const QStringList &actions)
+                               const QString &body, const QStringList &actions,
+                               const QString &previewSummary, const QString &previewBody)
 {
     QDBusInterface notifications(QStringLiteral("org.freedesktop.Notifications"),
                                  QStringLiteral("/org/freedesktop/Notifications"),
                                  QStringLiteral("org.freedesktop.Notifications"),
                                  QDBusConnection::sessionBus());
     QVariantMap hints;
-    hints.insert(QStringLiteral("x-nemo-preview-summary"), summary);
-    hints.insert(QStringLiteral("x-nemo-preview-body"), body);
+    hints.insert(QStringLiteral("x-nemo-preview-summary"), previewSummary);
+    hints.insert(QStringLiteral("x-nemo-preview-body"), previewBody);
     hints.insert(QStringLiteral("desktop-entry"), QStringLiteral("harbour-flotsam"));
     for (int i = 0; i + 1 < actions.size(); i += 2) {
         const QString actionKey = actions.at(i);

@@ -346,6 +346,7 @@ void CommonTest::atomicPrivateState()
     AtomicState loaded(state.path());
     QVERIFY(loaded.load());
     QCOMPARE(loaded.object().value(QStringLiteral("schemaVersion")).toInt(), 1);
+    QVERIFY(!loaded.object().contains(QStringLiteral("warningAcknowledged")));
 }
 
 void CommonTest::helperCompareAndSwap()

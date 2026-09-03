@@ -186,8 +186,9 @@ QString AppController::passphraseError(const QString &securityFamily,
 }
 
 void AppController::manualSync() { startVoidCall(QStringLiteral("ManualSync")); }
-void AppController::beginSetup(int id, bool warning) {
-    startVoidCall(QStringLiteral("BeginSetup"), QVariantList() << id << warning);
+void AppController::beginSetup(int id) {
+    // The trailing value keeps the version 1 D-Bus method signature compatible.
+    startVoidCall(QStringLiteral("BeginSetup"), QVariantList() << id << true);
 }
 void AppController::completeSetup(const QVariantList &ids) {
     QStringList selected;

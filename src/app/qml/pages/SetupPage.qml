@@ -58,28 +58,12 @@ Page {
                 value: currentIndex >= 0 ? controller.accounts[currentIndex].displayName : "Select account"
             }
 
-            Label {
-                x: Theme.horizontalPageMargin
-                width: parent.width - 2 * x
-                text: "Flotsam stores Wi-Fi passwords as readable plaintext JSON in " +
-                      "Sailfish OS/NetworkSync in this account. Anyone with access to those files can read them."
-                color: Theme.highlightColor
-                wrapMode: Text.Wrap
-            }
-
-            TextSwitch {
-                id: warningSwitch
-
-                text: "I understand the plaintext-storage warning"
-                checked: controller.status.plaintextWarningAcknowledged
-            }
-
             Button {
                 anchors.horizontalCenter: parent.horizontalCenter
                 text: controller.status.setupStage === "selection" ? "Directory ready" : "Create sync directory"
-                enabled: page.selectedAccountId > 0 && warningSwitch.checked
+                enabled: page.selectedAccountId > 0
                          && controller.status.setupStage !== "selection" && !controller.busy
-                onClicked: controller.beginSetup(page.selectedAccountId, warningSwitch.checked)
+                onClicked: controller.beginSetup(page.selectedAccountId)
             }
 
             SectionHeader {

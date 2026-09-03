@@ -198,8 +198,8 @@ QVariantMap SyncDaemon::Status() const
                   m_state.value(QStringLiteral("setupStage")).toString());
     status.insert(QStringLiteral("accountId"),
                   m_state.value(QStringLiteral("accountId")).toInt());
-    status.insert(QStringLiteral("plaintextWarningAcknowledged"),
-                  m_state.value(QStringLiteral("warningAcknowledged")).toBool());
+    // Keep older application builds able to pass their former setup gate.
+    status.insert(QStringLiteral("plaintextWarningAcknowledged"), true);
     status.insert(QStringLiteral("lastResult"), m_lastResult);
     status.insert(QStringLiteral("lastError"), m_lastError);
     status.insert(QStringLiteral("lastSync"), m_lastSync.toString(Qt::ISODate));
@@ -429,10 +429,11 @@ void SyncDaemon::requestSync(const QString &reason)
     m_accounts.authenticate(m_state.value(QStringLiteral("accountId")).toInt());
 }
 
-void SyncDaemon::BeginSetup(int accountId, bool plaintextWarningAcknowledged)
+void SyncDaemon::BeginSetup(int accountId, bool reserved)
 {
-    if (accountId <= 0 || !plaintextWarningAcknowledged) {
-        reportError(QStringLiteral("Select an account and acknowledge plaintext password storage"));
+    Q_UNUSED(reserved)
+    if (accountId <= 0) {
+        reportError(QStringLiteral("Select an account"));
         return;
     }
     if (m_phase != Idle) {
@@ -443,7 +444,6 @@ void SyncDaemon::BeginSetup(int accountId, bool plaintextWarningAcknowledged)
         SetAccount(accountId);
     }
     m_state.insert(QStringLiteral("accountId"), accountId);
-    m_state.insert(QStringLiteral("warningAcknowledged"), true);
     m_state.insert(QStringLiteral("setupComplete"), false);
     m_state.insert(QStringLiteral("setupStage"), QStringLiteral("creating"));
     saveState();
@@ -1476,7 +1476,7 @@ void SyncDaemon::notifyAttention(const QString &networkId, const QString &kind, 
     saveState();
     const QString key = kind + QLatin1Char(':') + networkId;
     if (actions) {
-        m_notifications.showNewNetwork(key, token);
+        m_notifications.showNewNetwork(key, token, recordForDisplay(networkId).displayName());
     } else {
         m_notifications.showAttention(key, kind);
     }

@@ -58,7 +58,7 @@ public:
     Q_INVOKABLE QString passphraseError(const QString &securityFamily,
                                         const QString &passphrase) const;
     Q_INVOKABLE void manualSync();
-    Q_INVOKABLE void beginSetup(int accountId, bool warningAcknowledged);
+    Q_INVOKABLE void beginSetup(int accountId);
     Q_INVOKABLE void completeSetup(const QVariantList &selectedNetworkIds);
     Q_INVOKABLE void setAccount(int accountId);
     Q_INVOKABLE void newNetworkChoice(const QString &networkId, const QString &choice);

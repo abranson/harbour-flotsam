@@ -9,7 +9,7 @@
     <method name="Details"><arg name="networkId" type="s" direction="in"/><arg name="revealSecret" type="b" direction="in"/><arg name="json" type="s" direction="out"/></method>
     <method name="QrPayload"><arg name="networkId" type="s" direction="in"/><arg name="payload" type="s" direction="out"/></method>
     <method name="ManualSync"/>
-    <method name="BeginSetup"><arg name="accountId" type="i" direction="in"/><arg name="plaintextWarningAcknowledged" type="b" direction="in"/></method>
+    <method name="BeginSetup"><arg name="accountId" type="i" direction="in"/><arg name="reserved" type="b" direction="in"/></method>
     <method name="CompleteSetup"><arg name="selectedNetworkIds" type="as" direction="in"/></method>
     <method name="SetAccount"><arg name="accountId" type="i" direction="in"/></method>
     <method name="NewNetworkChoice"><arg name="networkId" type="s" direction="in"/><arg name="choice" type="s" direction="in"/></method>

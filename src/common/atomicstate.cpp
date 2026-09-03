@@ -48,7 +48,6 @@ QJsonObject AtomicState::initialObject()
     object.insert(QStringLiteral("deviceUuid"), QUuid::createUuid().toString());
     object.insert(QStringLiteral("deviceLabel"), QStringLiteral("Sailfish device"));
     object.insert(QStringLiteral("accountId"), 0);
-    object.insert(QStringLiteral("warningAcknowledged"), false);
     object.insert(QStringLiteral("setupComplete"), false);
     object.insert(QStringLiteral("setupStage"), QStringLiteral("account"));
     object.insert(QStringLiteral("blocks"), QJsonArray());

@@ -47,7 +47,7 @@ Page {
                         width: parent.width
                         text: controller.error || controller.status.lastError
                               || controller.status.lastResult ||
-                              "Passwords are stored as plaintext in your Nextcloud files."
+                              "Synchronize saved Wi-Fi networks through Nextcloud."
                         color: parent.parent.highlighted ? Theme.secondaryHighlightColor : Theme.secondaryColor
                         font.pixelSize: Theme.fontSizeSmall
                         wrapMode: Text.Wrap

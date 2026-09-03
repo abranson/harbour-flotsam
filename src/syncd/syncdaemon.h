@@ -43,7 +43,7 @@ public slots:
     QString Details(const QString &networkId, bool revealSecret) const;
     QString QrPayload(const QString &networkId) const;
     void ManualSync();
-    void BeginSetup(int accountId, bool plaintextWarningAcknowledged);
+    void BeginSetup(int accountId, bool reserved);
     void CompleteSetup(const QStringList &selectedNetworkIds);
     void SetAccount(int accountId);
     void NewNetworkChoice(const QString &networkId, const QString &choice);

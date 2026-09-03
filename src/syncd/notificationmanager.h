@@ -33,7 +33,8 @@ class NotificationManager : public QObject
 public:
     explicit NotificationManager(QObject *parent = nullptr);
 
-    void showNewNetwork(const QString &deduplicationKey, const QString &token);
+    void showNewNetwork(const QString &deduplicationKey, const QString &token,
+                        const QString &displayName);
     void showAttention(const QString &deduplicationKey, const QString &kind);
 
 signals:
@@ -45,7 +46,8 @@ private slots:
 
 private:
     void show(const QString &deduplicationKey, const QString &summary,
-              const QString &body, const QStringList &actions);
+              const QString &body, const QStringList &actions,
+              const QString &previewSummary, const QString &previewBody);
 
     NotificationsInterfaceProxy *m_interface;
     QHash<QString, uint> m_notificationIds;

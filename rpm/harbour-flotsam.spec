@@ -89,7 +89,7 @@ systemctl daemon-reload >/dev/null 2>&1 || :
 %dir %attr(0755,root,root) %{_datadir}/licenses/%{name}
 %license %{_datadir}/licenses/%{name}/LICENSE
 %{_bindir}/harbour-flotsam
-%{_libexecdir}/harbour-flotsam-syncd
+%attr(2755,root,privileged) %{_libexecdir}/harbour-flotsam-syncd
 %{_libexecdir}/harbour-flotsam-connman-helper
 %{_datadir}/harbour-flotsam/qml
 %{_datadir}/applications/harbour-flotsam.desktop

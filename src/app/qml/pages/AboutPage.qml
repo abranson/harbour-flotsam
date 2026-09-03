@@ -23,7 +23,7 @@ Page {
                 text: "Flotsam synchronizes supported saved Wi-Fi settings through one existing Nextcloud account. " +
                       "Only SSID, security family, password, hidden status, and autoconnect are synchronized. " +
                       "IP, DNS, proxy, adapter, BSSID, lease, and enterprise settings stay local.\n\n" +
-                      "Passwords are intentionally stored as plaintext JSON under Sailfish OS/NetworkSync.\n\n" +
+                      "Network records are stored under Sailfish OS/NetworkSync in the selected account.\n\n" +
                       "Licensed under BSD-3-Clause."
                 color: Theme.primaryColor
                 wrapMode: Text.Wrap

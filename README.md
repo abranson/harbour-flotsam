@@ -7,19 +7,20 @@ Sailfish OS 5.2 or newer, not a Harbour Store application.
 The package contains three deliberately separated processes:
 
 - `harbour-flotsam`, a Sailfish Silica management application;
-- `harbour-flotsam-syncd`, an unprivileged user-session daemon that owns local
+- `harbour-flotsam-syncd`, a user-session daemon that owns local
   sync state, Accounts/SSO authentication, WebDAV traffic, reconciliation, and
-  notifications;
+  notifications. It runs with the device user's UID and the `privileged`
+  effective GID so it can read Sailfish's protected Accounts store;
 - `harbour-flotsam-connman-helper`, an on-demand root service that can only
   enumerate, export, compare-and-apply, and compare-and-remove supported saved
   ConnMan Wi-Fi services.
 
-## Security and data format
+## Authentication and data format
 
-Wi-Fi passwords are intentionally readable plaintext in each synchronized
-JSON record. Flotsam shows this warning before setup. Nextcloud credentials
-never enter Flotsam's state file; the daemon requests them from Sailfish
-Accounts/SSO for each synchronization.
+Flotsam treats the selected Nextcloud account as the storage trust boundary.
+Wi-Fi passwords are included in each synchronized JSON record. Nextcloud
+credentials never enter Flotsam's state file; the daemon requests them from
+Sailfish Accounts/SSO for each synchronization.
 
 Remote data is fixed at:
 
