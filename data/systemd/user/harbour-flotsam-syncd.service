@@ -1,0 +1,12 @@
+[Unit]
+Description=Flotsam synchronization daemon
+PartOf=user-session.target
+
+[Service]
+Type=dbus
+BusName=org.harbour.flotsam.Sync
+ExecStart=/usr/libexec/harbour-flotsam-syncd
+Restart=on-failure
+
+[Install]
+WantedBy=user-session.target

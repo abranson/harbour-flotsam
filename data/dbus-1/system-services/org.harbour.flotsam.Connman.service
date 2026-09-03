@@ -1,0 +1,4 @@
+[D-BUS Service]
+Name=org.harbour.flotsam.Connman
+SystemdService=harbour-flotsam-connman-helper.service
+Exec=/usr/libexec/harbour-flotsam-connman-helper

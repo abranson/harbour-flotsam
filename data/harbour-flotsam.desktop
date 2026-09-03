@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Flotsam
+X-Nemo-Application-Type=silica-qt5
+X-Nemo-Single-Instance=yes
+Exec=/usr/bin/sailjail -p harbour-flotsam.desktop /usr/bin/harbour-flotsam
+Icon=harbour-flotsam
+
+[X-Sailjail]
+Permissions=Flotsam
+OrganizationName=org.harbour
+ApplicationName=harbour-flotsam

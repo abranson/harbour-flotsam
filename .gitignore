@@ -1,0 +1,16 @@
+*.o
+*.moc
+Makefile
+Makefile.*
+.qmake.stash
+.mb2/
+RPMS/
+TASK.md
+documentation.list
+moc_*.cpp
+qrc_*.cpp
+tst_flotsam_common
+tst_flotsam_webdav
+harbour-flotsam
+harbour-flotsam-syncd
+harbour-flotsam-connman-helper

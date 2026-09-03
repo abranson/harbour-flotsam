@@ -1,0 +1,26 @@
+[Unit]
+Description=Flotsam ConnMan helper
+
+[Service]
+Type=dbus
+BusName=org.harbour.flotsam.Connman
+ExecStart=/usr/libexec/harbour-flotsam-connman-helper
+User=root
+Group=root
+Restart=on-failure
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateNetwork=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX
+IPAddressDeny=any
+LockPersonality=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+MemoryDenyWriteExecute=yes
+CapabilityBoundingSet=
+UMask=0077

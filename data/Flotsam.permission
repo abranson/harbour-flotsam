@@ -1,0 +1,7 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# x-sailjail-description = Flotsam Wi-Fi synchronization service
+# x-sailjail-long-description = View and manage Wi-Fi synchronization through the private Flotsam user service
+
+dbus-user.talk org.harbour.flotsam.Sync
+dbus-user.call org.harbour.flotsam.Sync=org.harbour.flotsam.Sync.*@/org/harbour/flotsam/Sync
+dbus-user.broadcast org.harbour.flotsam.Sync=org.harbour.flotsam.Sync.*@/org/harbour/flotsam/Sync

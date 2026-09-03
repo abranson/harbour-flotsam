@@ -1,0 +1,4 @@
+[D-BUS Service]
+Name=org.harbour.flotsam.Sync
+SystemdService=harbour-flotsam-syncd.service
+Exec=/usr/libexec/harbour-flotsam-syncd
