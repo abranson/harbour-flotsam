@@ -62,6 +62,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p RPMS
+          chmod a+w RPMS
           docker run --rm --privileged \
             -e RELEASE -e ARCH \
             -v "$PWD":/share \
@@ -75,7 +76,7 @@ jobs:
               cp -R /share/. "$build_dir/"
               cd "$build_dir"
               mb2 -t "SailfishOS-${RELEASE}-${ARCH}" --no-vcs-apply build -d
-              sudo cp -v RPMS/*.rpm /share/RPMS/
+              cp -v RPMS/*.rpm /share/RPMS/
             '
 
       - name: Upload RPMs
