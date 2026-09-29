@@ -10,7 +10,7 @@ permissions:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
 jobs:
   test:
@@ -81,3 +81,99 @@ jobs:
           name: harbour-flotsam-${{ env.ARCH }}
           path: RPMS/*.rpm
           if-no-files-found: error
+
+  release:
+    name: Release and publish RPMs
+    needs: build
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    concurrency:
+      group: flotsam-package-repository-publish
+      cancel-in-progress: false
+    env:
+      PACKAGE_REPO: ${{ github.repository_owner }}/repo
+    steps:
+      - name: Download RPMs
+        uses: actions/download-artifact@v4
+        with:
+          name: harbour-flotsam-aarch64
+          path: rpms
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          files: rpms/*.rpm
+          fail_on_unmatched_files: true
+
+      - name: Check publish configuration
+        id: publish
+        env:
+          GH_TOKEN: ${{ secrets.PUBLISH_REPO_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::warning::PUBLISH_REPO_TOKEN is not set; skipping RPM repository publication."
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Fail visibly for a configured but invalid/inaccessible token.
+          gh api "repos/$PACKAGE_REPO" --silent
+          echo "enabled=true" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout RPM repository
+        if: steps.publish.outputs.enabled == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.PACKAGE_REPO }}
+          ref: master
+          token: ${{ secrets.PUBLISH_REPO_TOKEN }}
+          path: publish-repo
+
+      - name: Install repository tools
+        if: steps.publish.outputs.enabled == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y createrepo-c
+
+      - name: Update RPM repository
+        if: steps.publish.outputs.enabled == 'true'
+        working-directory: publish-repo
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          rpms=(../rpms/*.rpm)
+          if [ "${#rpms[@]}" -eq 0 ]; then
+            echo "::error::No RPMs to publish."
+            exit 1
+          fi
+          mkdir -p aarch64
+          for rpm in "${rpms[@]}"; do
+            filename=${rpm##*/}
+            if [[ ! $filename =~ ^(harbour-flotsam|harbour-flotsam-debuginfo|harbour-flotsam-debugsource)-[0-9][^-]*-[^-]+\.aarch64\.rpm$ ]]; then
+              echo "::error::Unexpected RPM artifact."
+              exit 1
+            fi
+            package=${BASH_REMATCH[1]}
+            # The numeric version boundary excludes other Flotsam packages.
+            old_rpms=(aarch64/"$package"-[0-9]*.aarch64.rpm)
+            if [ "${#old_rpms[@]}" -gt 0 ]; then
+              rm -- "${old_rpms[@]}"
+            fi
+            install -m 0644 "$rpm" "aarch64/$filename"
+          done
+          createrepo_c --update aarch64
+          git config user.name "GitHub Actions"
+          git config user.email "actions@users.noreply.github.com"
+          git add aarch64
+          if ! git diff --cached --quiet; then
+            git commit -m "Release harbour-flotsam $RELEASE_TAG"
+            # Never force: concurrent repository updates must not be overwritten.
+            git push origin HEAD:master
+          fi

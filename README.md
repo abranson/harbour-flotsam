@@ -78,8 +78,17 @@ and manual dispatches. It runs the common and mock WebDAV tests with host Qt 5,
 then builds aarch64 RPMs using `coderus/sailfishos-platform-sdk:5.2.0.15`.
 The SDK build also checks compatibility with Sailfish's Qt 5.6 baseline.
 Download the application and debug RPMs from the `harbour-flotsam-aarch64`
-artifact on the workflow run. No repository secrets are required, and this
-workflow does not publish releases or upload to a package repository.
+artifact on the workflow run. Builds do not require repository secrets.
+
+Pushing a release tag creates a GitHub release containing those RPMs. If the
+`PUBLISH_REPO_TOKEN` Actions secret is set, it also updates the `aarch64`
+directory and repository metadata on the `master` branch of
+`<repository-owner>/repo`, replacing older versions of the same Flotsam
+packages. The token needs Contents read/write access to that repository.
+Other packages and architectures are left untouched. Without the secret,
+the GitHub release is still created but RPM repository publishing is skipped.
+Branch pushes, pull requests and manual builds never publish packages.
+Before tagging, update the RPM spec's version/release: tags do not change it.
 
 ## Runtime behavior
 
