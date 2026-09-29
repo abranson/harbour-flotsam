@@ -66,9 +66,12 @@ jobs:
             -e RELEASE -e ARCH \
             -v "$PWD":/share \
             "coderus/sailfishos-platform-sdk:${RELEASE}" \
-            bash -c '
+            bash -lc '
               set -euo pipefail
-              build_dir=$(mktemp -d /tmp/flotsam-build.XXXXXX)
+              # Match the working SDK helper: initialize the login environment
+              # and keep sources accessible to Scratchbox under the SDK home.
+              build_dir=$(mktemp -d "$HOME/flotsam-build.XXXXXX")
+              chmod 0755 "$build_dir"
               cp -R /share/. "$build_dir/"
               cd "$build_dir"
               mb2 -t "SailfishOS-${RELEASE}-${ARCH}" --no-vcs-apply build -d
