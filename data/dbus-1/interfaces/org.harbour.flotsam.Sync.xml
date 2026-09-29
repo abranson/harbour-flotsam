@@ -2,7 +2,8 @@
  "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
 <node name="/org/harbour/flotsam/Sync">
   <interface name="org.harbour.flotsam.Sync">
-    <annotation name="org.harbour.flotsam.InterfaceVersion" value="2"/>
+    <!-- System bus: privileged Flotsam UI only. Session bus is activation only. -->
+    <annotation name="org.harbour.flotsam.InterfaceVersion" value="3"/>
     <method name="Status"><arg name="status" type="a{sv}" direction="out"/></method>
     <method name="Accounts"><arg name="json" type="s" direction="out"/></method>
     <method name="ListNetworks"><arg name="json" type="s" direction="out"/></method>
@@ -20,7 +21,6 @@
     <method name="ResolveConflict"><arg name="networkId" type="s" direction="in"/><arg name="choice" type="s" direction="in"/><arg name="editedFields" type="a{sv}" direction="in"/></method>
     <method name="ResolveForgotten"><arg name="networkId" type="s" direction="in"/><arg name="choice" type="s" direction="in"/></method>
     <method name="ForgetEverywhere"><arg name="networkId" type="s" direction="in"/></method>
-    <method name="NotificationAction"><arg name="token" type="s" direction="in"/><arg name="action" type="s" direction="in"/></method>
     <signal name="StatusChanged"><arg name="status" type="a{sv}"/></signal>
     <signal name="NetworksChanged"/>
     <signal name="OperationFailed"><arg name="message" type="s"/></signal>

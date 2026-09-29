@@ -1,7 +1,12 @@
 # SPDX-License-Identifier: BSD-3-Clause
 # x-sailjail-description = Flotsam Wi-Fi synchronization service
-# x-sailjail-long-description = View and manage Wi-Fi synchronization through the private Flotsam user service
+# x-sailjail-long-description = Manage saved Wi-Fi credentials through Flotsam's authenticated system-bus API
 
-dbus-user.talk org.harbour.flotsam.Sync
-dbus-user.call org.harbour.flotsam.Sync=org.harbour.flotsam.Sync.*@/org/harbour/flotsam/Sync
-dbus-user.broadcast org.harbour.flotsam.Sync=org.harbour.flotsam.Sync.*@/org/harbour/flotsam/Sync
+# The desktop's Privileged permission grants the group; the daemon also checks UI identity.
+# No Accounts/Keys, persistent sync state, or root-helper socket is exposed.
+dbus-system.call org.harbour.flotsam.Sync=org.harbour.flotsam.Sync.*@/org/harbour/flotsam/Sync
+dbus-system.broadcast org.harbour.flotsam.Sync=org.harbour.flotsam.Sync.*@/org/harbour/flotsam/Sync
+dbus-system.call org.harbour.flotsam.Connman=org.harbour.flotsam.Identity1.VerifyDaemon@/org/harbour/flotsam/Connman
+blacklist /run/harbour-flotsam
+blacklist /run/harbour-flotsam-helper
+blacklist /var/lib/harbour-flotsam

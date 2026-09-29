@@ -1,6 +1,6 @@
 Name:       harbour-flotsam
 Summary:    Flotsam connectivity and synchronization service
-Version:    0.1.0
+Version:    0.1.1
 Release:    1
 Group:      Qt/Qt
 License:    BSD-3-Clause
@@ -52,6 +52,9 @@ install -D -m 0644 data/harbour-flotsam.desktop \
     %{buildroot}%{_datadir}/applications/harbour-flotsam.desktop
 install -D -m 0644 data/Flotsam.permission \
     %{buildroot}%{_sysconfdir}/sailjail/permissions/Flotsam.permission
+install -D -m 0644 data/tmpfiles.d/harbour-flotsam.conf \
+    %{buildroot}%{_prefix}/lib/tmpfiles.d/harbour-flotsam.conf
+install -d -m 0770 %{buildroot}%{_localstatedir}/lib/harbour-flotsam
 install -D -m 0644 data/icons/harbour-flotsam.svg \
     %{buildroot}%{_datadir}/icons/hicolor/scalable/apps/harbour-flotsam.svg
 for size in 86 108 128 172; do
@@ -73,15 +76,19 @@ install -D -m 0644 data/dbus-1/system-services/org.harbour.flotsam.Connman.servi
     %{buildroot}%{_datadir}/dbus-1/system-services/org.harbour.flotsam.Connman.service
 install -D -m 0644 data/dbus-1/system.d/org.harbour.flotsam.Connman.conf \
     %{buildroot}%{_sysconfdir}/dbus-1/system.d/org.harbour.flotsam.Connman.conf
+install -D -m 0644 data/dbus-1/system.d/org.harbour.flotsam.Sync.conf \
+    %{buildroot}%{_sysconfdir}/dbus-1/system.d/org.harbour.flotsam.Sync.conf
 install -D -m 0644 data/dbus-1/interfaces/org.harbour.flotsam.Sync.xml \
     %{buildroot}%{_datadir}/dbus-1/interfaces/org.harbour.flotsam.Sync.xml
 install -D -m 0644 data/dbus-1/interfaces/org.harbour.flotsam.Connman.xml \
     %{buildroot}%{_datadir}/dbus-1/interfaces/org.harbour.flotsam.Connman.xml
 
 %post
+systemd-tmpfiles --create %{_prefix}/lib/tmpfiles.d/harbour-flotsam.conf >/dev/null 2>&1 || :
+systemctl daemon-reload >/dev/null 2>&1 || :
+systemctl stop harbour-flotsam-connman-helper.service >/dev/null 2>&1 || :
 systemctl-user daemon-reload >/dev/null 2>&1 || :
 systemctl-user restart harbour-flotsam-syncd.service >/dev/null 2>&1 || :
-systemctl daemon-reload >/dev/null 2>&1 || :
 
 %postun
 if [ "$1" -eq 0 ]; then
@@ -93,6 +100,8 @@ systemctl daemon-reload >/dev/null 2>&1 || :
 
 %files
 %defattr(-,root,root,-)
+%{_prefix}/lib/tmpfiles.d/harbour-flotsam.conf
+%dir %attr(0770,root,privileged) %{_localstatedir}/lib/harbour-flotsam
 %dir %attr(0755,root,root) %{_datadir}/licenses/%{name}
 %license %{_datadir}/licenses/%{name}/LICENSE
 %{_bindir}/harbour-flotsam
@@ -112,9 +121,14 @@ systemctl daemon-reload >/dev/null 2>&1 || :
 %{_datadir}/dbus-1/services/org.harbour.flotsam.Sync.service
 %{_datadir}/dbus-1/system-services/org.harbour.flotsam.Connman.service
 %config %{_sysconfdir}/dbus-1/system.d/org.harbour.flotsam.Connman.conf
+%config %{_sysconfdir}/dbus-1/system.d/org.harbour.flotsam.Sync.conf
 %{_datadir}/dbus-1/interfaces/org.harbour.flotsam.Sync.xml
 %{_datadir}/dbus-1/interfaces/org.harbour.flotsam.Connman.xml
 
 %changelog
+* Tue Sep 29 2026 Andrew Branson <andrew.branson@jolla.com> - 0.1.1-1
+- Restrict management to the authenticated sandboxed UI and protect local state.
+- Isolate ConnMan operations and require review after state migration.
+
 * Thu Sep 03 2026 Jolla Mobile Ltd <info@jolla.com> - 0.1.0-1
 - Initial Flotsam system package.

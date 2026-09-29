@@ -14,6 +14,7 @@
 #include <QVariantMap>
 
 class QDBusPendingCallWatcher;
+class QDBusServiceWatcher;
 
 namespace Flotsam {
 
@@ -22,7 +23,8 @@ class SyncInterfaceProxy : public QDBusAbstractInterface
     Q_OBJECT
 
 public:
-    explicit SyncInterfaceProxy(QObject *parent = nullptr);
+    explicit SyncInterfaceProxy(const QDBusConnection &connection, QObject *parent = nullptr,
+                                const QString &service = QString());
 
 signals:
     void StatusChanged(const QVariantMap &status);
@@ -92,6 +94,8 @@ private slots:
     void remoteImportFinished(bool success, const QString &message);
 
 private:
+    bool connectService();
+    void connectedService(const QDBusConnection &connection, const QString &owner);
     void startStringCall(const QString &method, const QString &kind,
                          const QVariantList &arguments = QVariantList());
     void startVoidCall(const QString &method, const QVariantList &arguments = QVariantList());
@@ -100,6 +104,8 @@ private:
     static QVariantMap parseObject(const QString &json, QString *error);
 
     SyncInterfaceProxy *m_interface;
+    QDBusServiceWatcher *m_ownerWatcher;
+    bool m_connecting = false;
     QVariantMap m_status;
     QVariantList m_accounts;
     QVariantList m_networks;

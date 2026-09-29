@@ -1,4 +1,5 @@
 INCLUDEPATH += $$PWD
+include($$PWD/security.pri)
 
 HEADERS += \
     $$PWD/atomicstate.h \

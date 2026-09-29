@@ -6,19 +6,23 @@
 
 #include "appcontroller.h"
 #include "networkrecord.h"
+#include "security.h"
+#include "uibus.h"
 
 #include <QDBusConnection>
 #include <QDBusPendingCallWatcher>
 #include <QDBusPendingReply>
+#include <QDBusMessage>
+#include <QDBusServiceWatcher>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonParseError>
 #include <QTimer>
+#include <unistd.h>
 
 namespace {
 
-const char SyncService[] = "org.harbour.flotsam.Sync";
 const char SyncPath[] = "/org/harbour/flotsam/Sync";
 const char SyncInterface[] = "org.harbour.flotsam.Sync";
 
@@ -26,18 +30,88 @@ const char SyncInterface[] = "org.harbour.flotsam.Sync";
 
 namespace Flotsam {
 
-SyncInterfaceProxy::SyncInterfaceProxy(QObject *parent)
-    : QDBusAbstractInterface(QString::fromLatin1(SyncService),
+SyncInterfaceProxy::SyncInterfaceProxy(const QDBusConnection &connection, QObject *parent,
+                                     const QString &service)
+    : QDBusAbstractInterface(service,
                              QString::fromLatin1(SyncPath),
                              SyncInterface,
-                             QDBusConnection::sessionBus(), parent)
+                             connection, parent)
 {
 }
 
 AppController::AppController(QObject *parent)
     : QObject(parent)
-    , m_interface(new SyncInterfaceProxy(this))
+    , m_interface(nullptr)
+    , m_ownerWatcher(new QDBusServiceWatcher(QString(), QDBusConnection::systemBus(),
+            QDBusServiceWatcher::WatchForUnregistration, this))
 {
+    connect(m_ownerWatcher, &QDBusServiceWatcher::serviceUnregistered, this,
+            [this](const QString &) {
+        delete m_interface;
+        m_interface = nullptr;
+        m_status.clear();
+        emit statusChanged();
+        m_ownerWatcher->setWatchedServices(QStringList());
+        setError(QStringLiteral("Flotsam service restarted; refresh to reconnect"));
+    });
+    QTimer::singleShot(0, this, &AppController::refresh);
+}
+
+bool AppController::connectService()
+{
+    if (m_interface && m_interface->connection().isConnected()) return true;
+    if (m_connecting) return false;
+    delete m_interface;
+    m_interface = nullptr;
+    m_connecting = true;
+    emit busyChanged();
+    const QDBusConnection connection = QDBusConnection::systemBus();
+    QDBusMessage query = QDBusMessage::createMethodCall(QStringLiteral("org.freedesktop.DBus"),
+            QStringLiteral("/org/freedesktop/DBus"), QStringLiteral("org.freedesktop.DBus"),
+            QStringLiteral("GetNameOwner"));
+    query << QStringLiteral("org.harbour.flotsam.Sync");
+    auto *ownerCall = new QDBusPendingCallWatcher(connection.asyncCall(query, 2000), this);
+    connect(ownerCall, &QDBusPendingCallWatcher::finished, this,
+            [this, connection](QDBusPendingCallWatcher *call) {
+        const QDBusPendingReply<QString> ownerReply = *call;
+        call->deleteLater();
+        const QString owner = ownerReply.isError() ? QString() : ownerReply.value();
+        if (!owner.startsWith(QLatin1Char(':'))) {
+            m_connecting = false;
+            emit busyChanged();
+            setError(QStringLiteral("Flotsam service is unavailable"));
+            return;
+        }
+        // Only root may own the helper's bus name. It checks host credentials;
+        // this UI's PID namespace cannot resolve the daemon's host PID in /proc.
+        QDBusMessage credentials = QDBusMessage::createMethodCall(QStringLiteral("org.harbour.flotsam.Connman"),
+                QStringLiteral("/org/harbour/flotsam/Connman"), QStringLiteral("org.harbour.flotsam.Identity1"),
+                QStringLiteral("VerifyDaemon"));
+        credentials << owner << uint(getuid());
+        auto *check = new QDBusPendingCallWatcher(connection.asyncCall(credentials, 2000), this);
+        connect(check, &QDBusPendingCallWatcher::finished, this,
+                [this, connection, owner](QDBusPendingCallWatcher *finished) {
+            const QDBusPendingReply<bool> reply = *finished;
+            finished->deleteLater();
+            m_connecting = false;
+            emit busyChanged();
+            if (reply.isError() || !reply.value()) {
+                setError(QStringLiteral("Flotsam service identity could not be verified"));
+                return;
+            }
+            // Pin the verified unique connection, never send passwords to an
+            // unverified replacement owning the well-known name.
+            connectedService(connection, owner);
+            refresh();
+        });
+    });
+    return false;
+}
+
+void AppController::connectedService(const QDBusConnection &connection, const QString &owner)
+{
+    m_ownerWatcher->setWatchedServices(QStringList() << owner);
+    m_interface = new SyncInterfaceProxy(connection, this, owner);
     connect(m_interface, &SyncInterfaceProxy::StatusChanged,
             this, &AppController::remoteStatusChanged);
     connect(m_interface, &SyncInterfaceProxy::NetworksChanged,
@@ -46,7 +120,6 @@ AppController::AppController(QObject *parent)
             this, &AppController::remoteError);
     connect(m_interface, &SyncInterfaceProxy::ImportFinished,
             this, &AppController::remoteImportFinished);
-    QTimer::singleShot(0, this, &AppController::refresh);
 }
 
 QVariantMap AppController::status() const { return m_status; }
@@ -55,11 +128,12 @@ QVariantList AppController::networks() const { return m_networks; }
 QVariantMap AppController::details() const { return m_details; }
 QString AppController::qrPayload() const { return m_qrPayload; }
 QString AppController::error() const { return m_error; }
-bool AppController::busy() const { return m_pendingCalls > 0; }
+bool AppController::busy() const { return m_connecting || m_pendingCalls > 0; }
 
 void AppController::refresh()
 {
     setError(QString());
+    if (!connectService()) return;
     ++m_pendingCalls;
     emit busyChanged();
     QDBusPendingCallWatcher *statusWatcher = new QDBusPendingCallWatcher(
@@ -74,6 +148,7 @@ void AppController::refresh()
 void AppController::startStringCall(const QString &method, const QString &kind,
                                     const QVariantList &arguments)
 {
+    if (!connectService()) return;
     if (kind != QLatin1String("accounts") && kind != QLatin1String("networks")) {
         setError(QString());
     }
@@ -88,6 +163,7 @@ void AppController::startStringCall(const QString &method, const QString &kind,
 
 void AppController::startVoidCall(const QString &method, const QVariantList &arguments)
 {
+    if (!connectService()) return;
     setError(QString());
     QDBusPendingCallWatcher *watcher = new QDBusPendingCallWatcher(
             m_interface->asyncCallWithArgumentList(method, arguments), this);
@@ -207,6 +283,7 @@ QVariantMap AppController::parseWifiQr(const QString &payload) const
 
 void AppController::importWifiQr(const QString &payload)
 {
+    if (!connectService()) return;
     setError(QString());
     QDBusPendingCallWatcher *watcher = new QDBusPendingCallWatcher(
             m_interface->asyncCall(QStringLiteral("ImportWifiQr"), payload), this);

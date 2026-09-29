@@ -23,7 +23,8 @@ CoverBackground {
             margins: Theme.paddingLarge
             verticalCenter: parent.verticalCenter
         }
-        text: controller.status.needsAttention
+        text: controller.status.version === undefined ? "Service unavailable"
+              : controller.status.needsAttention
               ? controller.status.needsAttention + " need attention"
               : controller.status.syncing ? "Synchronizing Wi-Fi" : "Wi-Fi synchronized"
         color: Theme.highlightColor

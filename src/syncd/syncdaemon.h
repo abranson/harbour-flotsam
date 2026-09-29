@@ -8,6 +8,7 @@
 #define FLOTSAM_SYNCDAEMON_H
 
 #include "accountprovider.h"
+#include "helpercall.h"
 #include "atomicstate.h"
 #include "networkrecord.h"
 #include "notificationmanager.h"
@@ -22,7 +23,6 @@
 #include <QTimer>
 
 class NetworkManager;
-class QDBusPendingCallWatcher;
 
 namespace Flotsam {
 
@@ -37,32 +37,31 @@ public:
     bool initialize(QString *error = nullptr);
 
 public slots:
-    QVariantMap Status() const;
-    QString Accounts() const;
-    QString ListNetworks() const;
-    QString Details(const QString &networkId, bool revealSecret) const;
-    QString QrPayload(const QString &networkId) const;
-    void ImportWifiQr(const QString &payload);
-    void ManualSync();
-    void BeginSetup(int accountId, bool reserved);
-    void CompleteSetup(const QStringList &selectedNetworkIds);
-    void SetAccount(int accountId);
-    void NewNetworkChoice(const QString &networkId, const QString &choice);
-    void Edit(const QString &networkId, const QString &passphrase,
+    Q_SCRIPTABLE QVariantMap Status() const;
+    Q_SCRIPTABLE QString Accounts() const;
+    Q_SCRIPTABLE QString ListNetworks() const;
+    Q_SCRIPTABLE QString Details(const QString &networkId, bool revealSecret) const;
+    Q_SCRIPTABLE QString QrPayload(const QString &networkId) const;
+    Q_SCRIPTABLE void ImportWifiQr(const QString &payload);
+    Q_SCRIPTABLE void ManualSync();
+    Q_SCRIPTABLE void BeginSetup(int accountId, bool reserved);
+    Q_SCRIPTABLE void CompleteSetup(const QStringList &selectedNetworkIds);
+    Q_SCRIPTABLE void SetAccount(int accountId);
+    Q_SCRIPTABLE void NewNetworkChoice(const QString &networkId, const QString &choice);
+    Q_SCRIPTABLE void Edit(const QString &networkId, const QString &passphrase,
               bool hidden, bool autoConnect, bool activeEditConfirmed);
-    void Block(const QString &networkId);
-    void Unblock(const QString &networkId);
-    void ResolveConflict(const QString &networkId, const QString &choice,
+    Q_SCRIPTABLE void Block(const QString &networkId);
+    Q_SCRIPTABLE void Unblock(const QString &networkId);
+    Q_SCRIPTABLE void ResolveConflict(const QString &networkId, const QString &choice,
                          const QVariantMap &editedFields);
-    void ResolveForgotten(const QString &networkId, const QString &choice);
-    void ForgetEverywhere(const QString &networkId);
-    void NotificationAction(const QString &token, const QString &action);
+    Q_SCRIPTABLE void ResolveForgotten(const QString &networkId, const QString &choice);
+    Q_SCRIPTABLE void ForgetEverywhere(const QString &networkId);
 
 signals:
-    void StatusChanged(const QVariantMap &status);
-    void NetworksChanged();
-    void OperationFailed(const QString &message);
-    void ImportFinished(bool success, const QString &message);
+    Q_SCRIPTABLE void StatusChanged(const QVariantMap &status);
+    Q_SCRIPTABLE void NetworksChanged();
+    Q_SCRIPTABLE void OperationFailed(const QString &message);
+    Q_SCRIPTABLE void ImportFinished(bool success, const QString &message);
 
 private slots:
     void credentialsReady(const Flotsam::WebDavCredentials &credentials);
@@ -76,12 +75,11 @@ private slots:
     void webDavFailed(const QString &operation, const QString &networkId,
                       int httpStatus, const QString &message,
                       bool transient, bool preconditionFailed);
-    void localInventoryFinished(QDBusPendingCallWatcher *watcher);
-    void mutationFinished(QDBusPendingCallWatcher *watcher);
+    void localInventoryFinished(Flotsam::HelperCall *watcher);
+    void mutationFinished(Flotsam::HelperCall *watcher);
     void networkStateChanged(const QString &state);
     void networkServicesChanged();
     void retryTimeout();
-    void notificationInvoked(const QString &token, const QString &action);
 
 private:
     enum Phase {
@@ -116,7 +114,7 @@ private:
     void processNextAction();
     void finishSync(bool success, const QString &message);
     void scheduleRetry(const QString &message);
-    void saveState();
+    bool saveState();
     void emitChanged();
     void reportError(const QString &message);
     void setNetworkError(const QString &networkId, const QString &message);

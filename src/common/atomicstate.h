@@ -15,7 +15,7 @@ namespace Flotsam {
 class AtomicState
 {
 public:
-    explicit AtomicState(const QString &path = QString());
+    explicit AtomicState(const QString &path = QString(), const QString &legacyPath = QString());
 
     QString path() const;
     QJsonObject object() const;
@@ -28,6 +28,8 @@ public:
 
 private:
     QString m_path;
+    bool m_protected;
+    QString m_legacyPath;
     QJsonObject m_object;
 };
 

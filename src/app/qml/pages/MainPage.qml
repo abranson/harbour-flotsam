@@ -8,6 +8,7 @@ Page {
     id: page
 
     allowedOrientations: Orientation.All
+    property bool statusAvailable: controller.status.version !== undefined
 
     SilicaListView {
         anchors.fill: parent
@@ -25,7 +26,8 @@ Page {
             Label {
                 x: Theme.horizontalPageMargin
                 width: parent.width - 2 * x
-                text: controller.status.setupComplete
+                text: !page.statusAvailable ? (controller.busy ? "Connecting…" : "Service unavailable")
+                      : controller.status.setupComplete
                       ? (controller.status.syncing ? "Synchronizing…" : "Up to date")
                       : "Nextcloud sync is not set up"
                 color: Theme.primaryColor
@@ -52,6 +54,7 @@ Page {
             }
             MenuItem {
                 text: controller.status.setupComplete ? "Change Nextcloud account" : "Set up Nextcloud sync"
+                enabled: page.statusAvailable
                 onClicked: pageStack.push(Qt.resolvedUrl("SetupPage.qml"), {
                     switchingAccount: controller.status.setupComplete
                 })
@@ -63,14 +66,17 @@ Page {
             }
             MenuItem {
                 text: "Scan Wi-Fi QR code"
+                enabled: page.statusAvailable
                 onClicked: pageStack.push(Qt.resolvedUrl("ScanPage.qml"))
             }
         }
 
         ViewPlaceholder {
             enabled: controller.networks.length === 0
-            text: controller.status.setupComplete ? "No supported saved Wi-Fi networks" : "Setup required"
-            hintText: controller.status.setupComplete
+            text: !page.statusAvailable ? (controller.busy ? "Connecting…" : "Service unavailable")
+                  : controller.status.setupComplete ? "No supported saved Wi-Fi networks" : "Setup required"
+            hintText: !page.statusAvailable ? "Waiting for a verified connection to Flotsam."
+                      : controller.status.setupComplete
                       ? "Open, WEP, and personal WPA networks appear here."
                       : "Pull down to choose an existing Nextcloud account."
         }

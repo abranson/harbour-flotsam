@@ -6,12 +6,28 @@
 
 #include "atomicstate.h"
 #include "applicationactivation.h"
+#include "appcontroller.h"
 #include "connmanhelper.h"
 #include "connmanutil.h"
 #include "networkrecord.h"
 #include "notificationtoken.h"
 #include "reconciler.h"
+#include "privatebus.h"
+#include "security.h"
+#include "uibus.h"
 
+#include <QCoreApplication>
+#include <QDBusConnection>
+#include <QDBusConnectionInterface>
+#include <QDBusMessage>
+#include <QDBusPendingCallWatcher>
+#include <QDBusPendingReply>
+#include <QDBusReply>
+#include <QProcess>
+#include <QSignalSpy>
+#include <unistd.h>
+#include <grp.h>
+#include <sys/stat.h>
 #include <QFileInfo>
 #include <QJsonDocument>
 #include <QTemporaryDir>
@@ -60,9 +76,10 @@ public:
     QString createdPath = QStringLiteral("/net/connman/service/wifi_aabbccddeeff_436166653b4f6e65_managed_psk");
     bool failSet = false;
     int createCalls = 0;
+    int listCalls = 0;
     QStringList removed;
 
-    QList<ConnmanServiceData> services(QString *) override { return values; }
+    QList<ConnmanServiceData> services(QString *) override { ++listCalls; return values; }
     QString getStringProperty(const QString &path, const QString &, QString *) override {
         return passwords.value(path);
     }
@@ -93,6 +110,9 @@ class CommonTest : public QObject
     Q_OBJECT
 
 private slots:
+    void privilegedUiPackaging();
+    void systemBusUiGate();
+    void processIdentityChecks();
     void securityNormalization();
     void macIndependentIdentity();
     void passwordValidation_data();
@@ -111,6 +131,13 @@ private slots:
     void readditionLifecycle();
     void completedDeletionVisibility();
     void atomicPrivateState();
+    void unsafeStateRejected();
+    void legacyStateMigration();
+    void helperRejectsMessageBus();
+    void privateBusAllowsOnlyExplicitApi();
+    void privateBusRejectsUnsafeSocket();
+    void uiProxyUsesPrivatePeer();
+    void crossUidBoundary();
     void helperCompareAndSwap();
     void helperRemovesMultipleAdapters();
     void helperRollsBack();
@@ -118,6 +145,31 @@ private slots:
     void notificationTokensRejectStaleActions();
     void applicationActivationRoutesNetworks();
 };
+
+void CommonTest::privilegedUiPackaging()
+{
+    QFile desktop(QFINDTESTDATA("../../data/harbour-flotsam.desktop"));
+    QVERIFY(desktop.open(QIODevice::ReadOnly));
+    const QByteArray entry = desktop.readAll();
+    QVERIFY(entry.contains("\nPermissions=Privileged;Flotsam;Camera\n"));
+    QVERIFY(!entry.contains("Sandboxing=Disabled"));
+    QVERIFY(entry.contains("\nExec=/usr/bin/harbour-flotsam\n"));
+
+    QFile permission(QFINDTESTDATA("../../data/Flotsam.permission"));
+    QVERIFY(permission.open(QIODevice::ReadOnly));
+    const QByteArray rules = permission.readAll();
+    QVERIFY(rules.contains("dbus-system.call org.harbour.flotsam.Sync="));
+    QVERIFY(rules.contains("org.harbour.flotsam.Identity1.VerifyDaemon@/org/harbour/flotsam/Connman"));
+    QVERIFY(!rules.contains("whitelist /run/"));
+    QVERIFY(rules.contains("\nblacklist /run/harbour-flotsam-helper\n"));
+    QVERIFY(rules.contains("\nblacklist /var/lib/harbour-flotsam\n"));
+    QVERIFY(!rules.contains("privileged-data"));
+    QVERIFY(!rules.contains("Accounts.permission"));
+
+    QFile busPolicy(QFINDTESTDATA("../../data/dbus-1/system.d/org.harbour.flotsam.Sync.conf"));
+    QVERIFY(busPolicy.open(QIODevice::ReadOnly));
+    QVERIFY(!busPolicy.readAll().contains("send_type=\"signal\""));
+}
 
 void CommonTest::securityNormalization()
 {
@@ -507,6 +559,380 @@ void CommonTest::atomicPrivateState()
     QVERIFY(!loaded.object().contains(QStringLiteral("warningAcknowledged")));
 }
 
+void CommonTest::unsafeStateRejected()
+{
+    QTemporaryDir directory;
+    const QString path = directory.path() + QStringLiteral("/state.json");
+    const QString alias = directory.path() + QStringLiteral("/alias.json");
+    AtomicState state(path);
+    QVERIFY(state.save());
+    QVERIFY(QFile::link(path, alias));
+    AtomicState linked(alias);
+    QVERIFY(!linked.load());
+    QVERIFY(!linked.save());
+    QVERIFY(QFile::remove(alias));
+    QVERIFY(::link(QFile::encodeName(path).constData(), QFile::encodeName(alias).constData()) == 0);
+    QVERIFY(!state.load());
+    QVERIFY(!state.save());
+    QVERIFY(QFile::remove(alias));
+    QVERIFY(QFile::setPermissions(path, QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ReadOther));
+    QVERIFY(!state.load());
+    QVERIFY(!state.save());
+    QVERIFY(QFile::setPermissions(path, QFileDevice::ReadOwner | QFileDevice::WriteOwner));
+    QJsonObject oversized = AtomicState::initialObject();
+    oversized.insert(QStringLiteral("padding"), QString(1024 * 1024, QLatin1Char('x')));
+    state.setObject(oversized);
+    QVERIFY(!state.save());
+    AtomicState original(path);
+    QVERIFY(original.load());
+    QVERIFY(!original.object().contains(QStringLiteral("padding")));
+}
+
+void CommonTest::legacyStateMigration()
+{
+    QTemporaryDir directory;
+    const QString legacy = directory.path() + QStringLiteral("/old/state.json");
+    const QString current = directory.path() + QStringLiteral("/new/state.json");
+    AtomicState old(legacy);
+    QJsonObject object = old.object();
+    object.insert(QStringLiteral("deviceLabel"), QStringLiteral("preserved"));
+    object.insert(QStringLiteral("pendingTombstones"), QJsonObject{{QStringLiteral("fixture"), true}});
+    object.insert(QStringLiteral("notificationTokens"), QJsonObject{{QStringLiteral("old"), true}});
+    old.setObject(object);
+    QVERIFY(old.save());
+    AtomicState migration(current, legacy);
+    QString error;
+    QVERIFY2(migration.load(&error), qPrintable(error));
+    QVERIFY(!QFile::exists(legacy));
+    QVERIFY(migration.object().value(QStringLiteral("migrationNeedsReview")).toBool());
+    QCOMPARE(migration.object().value(QStringLiteral("deviceLabel")).toString(), QStringLiteral("preserved"));
+    QVERIFY(!migration.object().value(QStringLiteral("pendingTombstones")).toObject().isEmpty());
+    QVERIFY(migration.object().value(QStringLiteral("notificationTokens")).toObject().isEmpty());
+    AtomicState reload(current, legacy);
+    QVERIFY(reload.load());
+    QVERIFY(reload.object().value(QStringLiteral("migrationNeedsReview")).toBool());
+    QVERIFY(old.save());
+    QVERIFY(!reload.load(&error)); // Never overwrite either copy after an interrupted cleanup.
+    QVERIFY(QFile::exists(legacy));
+    AtomicState protectedCopy(current);
+    QVERIFY(protectedCopy.load());
+    QCOMPARE(protectedCopy.object(), migration.object());
+}
+
+void CommonTest::helperRejectsMessageBus()
+{
+    // An isolated, real bus and separate caller process, never the user's bus.
+    QProcess bus;
+    bus.start(QStringLiteral("dbus-daemon"), QStringList()
+              << QStringLiteral("--session") << QStringLiteral("--nofork")
+              << QStringLiteral("--print-address=1"));
+    QVERIFY(bus.waitForStarted());
+    QVERIFY(bus.waitForReadyRead());
+    const QString address = QString::fromUtf8(bus.readLine()).trimmed();
+    QDBusConnection connection = QDBusConnection::connectToBus(address, QStringLiteral("test-bus"));
+    QVERIFY(connection.isConnected());
+    FakeBackend backend;
+    ConnmanHelper helper(&backend);
+    QVERIFY(connection.registerObject(QStringLiteral("/helper"), &helper,
+                                     QDBusConnection::ExportScriptableSlots));
+    QVERIFY(connection.registerService(QStringLiteral("org.harbour.flotsam.Test")));
+    for (const QString &method : {QStringLiteral("List"), QStringLiteral("Export"),
+                                 QStringLiteral("CompareAndApply"), QStringLiteral("CompareAndRemove")}) {
+        QProcess caller;
+        caller.start(QCoreApplication::applicationFilePath(), QStringList()
+                     << QStringLiteral("--probe") << address << QStringLiteral("bus")
+                     << method << QStringLiteral("org.harbour.flotsam.Error.AccessDenied"));
+        QVERIFY(caller.waitForStarted());
+        QTRY_COMPARE(caller.state(), QProcess::NotRunning);
+        QCOMPARE(caller.exitCode(), 0);
+    }
+    QCOMPARE(backend.listCalls, 0);
+    QCOMPARE(backend.createCalls, 0);
+    QVERIFY(backend.removed.isEmpty());
+    QDBusConnection::disconnectFromBus(connection.name());
+    bus.terminate();
+    QVERIFY(bus.waitForFinished());
+}
+
+void CommonTest::privateBusAllowsOnlyExplicitApi()
+{
+    QTemporaryDir directory;
+    const QString socket = directory.path() + QStringLiteral("/peer");
+    FakeBackend backend;
+    ConnmanHelper helper(&backend);
+    PrivateBus server;
+    QString error;
+    QVERIFY2(server.listen(socket, QStringLiteral("/helper"), &helper, false, &error), qPrintable(error));
+    for (const QString &method : {QStringLiteral("List"), QStringLiteral("deleteLater")}) {
+        QProcess caller;
+        caller.start(QCoreApplication::applicationFilePath(), QStringList()
+                     << QStringLiteral("--probe") << QStringLiteral("unix:path=") + socket
+                     << QStringLiteral("peer") << method
+                     << (method == QLatin1String("List") ? QStringLiteral("success")
+                         : QStringLiteral("org.freedesktop.DBus.Error.UnknownMethod")));
+        QVERIFY(caller.waitForStarted());
+        QTRY_COMPARE(caller.state(), QProcess::NotRunning);
+        QCOMPARE(caller.exitCode(), 0);
+    }
+    QCOMPARE(backend.listCalls, 1);
+    PrivateBus second;
+    QVERIFY(!second.listen(socket, QStringLiteral("/helper"), &helper, false, &error));
+}
+
+void CommonTest::privateBusRejectsUnsafeSocket()
+{
+    QTemporaryDir directory;
+    const QString socket = directory.path() + QStringLiteral("/peer");
+    QFile file(socket);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    QCOMPARE(file.write("preserve"), qint64(8));
+    file.close();
+    QObject object;
+    PrivateBus server;
+    QVERIFY(!server.listen(socket, QStringLiteral("/helper"), &object, false, nullptr));
+    QVERIFY(file.open(QIODevice::ReadOnly));
+    QCOMPARE(file.readAll(), QByteArray("preserve"));
+}
+
+class FakeSync : public QObject
+{
+    Q_OBJECT
+    Q_CLASSINFO("D-Bus Interface", "org.harbour.flotsam.Sync")
+public:
+    int changes = 0;
+public slots:
+    Q_SCRIPTABLE void ForgetEverywhere(const QString &id) {
+        if (id == QLatin1String("fixture-only")) ++changes;
+    }
+    Q_SCRIPTABLE QVariantMap Status() {
+        const QVariantMap result{{QStringLiteral("fixture"), true}};
+        emit StatusChanged(result);
+        return result;
+    }
+    Q_SCRIPTABLE QString Echo(const QString &text, const QVariantMap &map,
+                              const QStringList &list, bool flag, int number) {
+        return text == QLatin1String("fixture") && map.value(QStringLiteral("n")).toInt() == 7
+                && list == (QStringList() << QStringLiteral("item")) && flag && number == 9
+                ? QStringLiteral("ok") : QStringLiteral("wrong arguments");
+    }
+signals:
+    Q_SCRIPTABLE void StatusChanged(const QVariantMap &status);
+};
+
+class FakeIdentification : public QObject
+{
+    Q_OBJECT
+    Q_CLASSINFO("D-Bus Interface", "org.sailfishos.sailjailed")
+public slots:
+    Q_SCRIPTABLE QVariantMap Identify() {
+        return {{QStringLiteral("pid"), int(getppid())},
+                {QStringLiteral("uid"), uint(getuid())},
+                {QStringLiteral("exe"), QCoreApplication::applicationFilePath()}};
+    }
+};
+
+void CommonTest::processIdentityChecks()
+{
+    const UiBusPolicy policy{getuid(), getegid(), getuid(),
+                            QCoreApplication::applicationFilePath(), QStringLiteral("/nonexistent")};
+    QVERIFY(processCredentials(getpid(), getuid(), getegid()));
+    QVERIFY(!processCredentials(getpid(), getuid(), getegid() + 1));
+    QVERIFY(!processCredentials(0, getuid(), getegid()));
+    QVERIFY(processExecutable(getpid(), policy, policy.uiExecutable));
+    QVERIFY(!processExecutable(getpid(), policy, QStringLiteral("/usr/bin/true")));
+    UiBusPolicy wrongOwner = policy;
+    wrongOwner.executableOwner = getuid() + 1;
+    QVERIFY(!processExecutable(getpid(), wrongOwner, policy.uiExecutable));
+    QTemporaryDir directory;
+    const QString copy = directory.path() + QStringLiteral("sandbox-copy");
+    QVERIFY(QFile::copy(policy.uiExecutable, copy));
+    QVERIFY(!processExecutable(getpid(), policy, copy));
+    QVERIFY(processExecutable(getpid(), policy, copy, true));
+    QVERIFY(!processExecutable(getpid(), wrongOwner, copy, true));
+    QFile changed(copy);
+    QVERIFY(changed.open(QIODevice::ReadWrite));
+    QVERIFY(changed.seek(8));
+    QVERIFY(changed.write("not-the-ui") > 0);
+    changed.close();
+    QVERIFY(!processExecutable(getpid(), policy, copy, true));
+}
+
+void CommonTest::systemBusUiGate()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    QFile policyFile(QFINDTESTDATA("../../data/dbus-1/system.d/org.harbour.flotsam.Sync.conf"));
+    QVERIFY(policyFile.open(QIODevice::ReadOnly));
+    QByteArray policyXml = policyFile.readAll();
+    const QByteArray testUser = "user=\"" + QByteArray::number(getuid()) + "\"";
+    policyXml.replace("user=\"defaultuser\"", testUser);
+    policyXml.replace("user=\"nemo\"", testUser);
+    QFile policyCopy(directory.path() + QStringLiteral("/flotsam.conf"));
+    QVERIFY(policyCopy.open(QIODevice::WriteOnly));
+    QCOMPARE(policyCopy.write(policyXml), qint64(policyXml.size()));
+    policyCopy.close();
+    QFile helperPolicy(QFINDTESTDATA("../../data/dbus-1/system.d/org.harbour.flotsam.Connman.conf"));
+    QVERIFY(helperPolicy.open(QIODevice::ReadOnly));
+    QByteArray helperXml = helperPolicy.readAll();
+    // The isolated fixture runs both roles as the test user. Production keeps
+    // helper name ownership root-only; never substitute this on the device.
+    helperXml.replace("user=\"root\"", testUser);
+    helperXml.replace("user=\"defaultuser\"", testUser);
+    helperXml.replace("user=\"nemo\"", testUser);
+    QFile helperCopy(directory.path() + QStringLiteral("/helper.conf"));
+    QVERIFY(helperCopy.open(QIODevice::WriteOnly));
+    QCOMPARE(helperCopy.write(helperXml), qint64(helperXml.size()));
+    helperCopy.close();
+    // Relevant defaults from Sailfish system.conf and sailjaild.conf, not the
+    // permissive session bus. Include the actual packaged Flotsam policy.
+    const QByteArray config = QByteArray(R"(<busconfig>
+      <type>system</type><listen>unix:tmpdir=/tmp</listen><auth>EXTERNAL</auth>
+      <policy context="default">
+        <allow user="*"/><deny own="*"/><deny send_type="method_call"/>
+        <allow send_type="signal"/>
+        <allow send_requested_reply="true" send_type="method_return"/>
+        <allow send_requested_reply="true" send_type="error"/>
+        <allow receive_type="method_call"/><allow receive_type="method_return"/>
+        <allow receive_type="error"/><allow receive_type="signal"/>
+        <allow send_destination="org.freedesktop.DBus" send_interface="org.freedesktop.DBus"/>
+        <allow send_destination="*" send_interface="org.sailfishos.sailjailed" send_member="Identify"/>
+      </policy><include>)") + QFile::encodeName(policyCopy.fileName()) + "</include><include>"
+            + QFile::encodeName(helperCopy.fileName()) + "</include></busconfig>";
+    QFile configFile(directory.path() + QStringLiteral("/system.conf"));
+    QVERIFY(configFile.open(QIODevice::WriteOnly));
+    QCOMPARE(configFile.write(config), qint64(config.size()));
+    configFile.close();
+    QProcess bus;
+    bus.start(QStringLiteral("dbus-daemon"), {QStringLiteral("--config-file=") + configFile.fileName(),
+              QStringLiteral("--nofork"), QStringLiteral("--print-address=1")});
+    QVERIFY(bus.waitForStarted());
+    QVERIFY2(bus.waitForReadyRead(), bus.readAllStandardError().constData());
+    const QString address = QString::fromUtf8(bus.readLine()).trimmed();
+    QDBusConnection connection = QDBusConnection::connectToBus(address, QStringLiteral("ui-gate-test"));
+    QVERIFY(connection.isConnected());
+    QVERIFY(!connection.registerService(QStringLiteral("org.harbour.flotsam.NotAllowed")));
+    QVERIFY(connection.registerService(QStringLiteral("org.harbour.flotsam.Sync")));
+    QVERIFY(connection.registerService(QStringLiteral("org.harbour.flotsam.Connman")));
+    DaemonIdentity identity(connection, getegid());
+    QVERIFY(!identity.VerifyDaemon(connection.baseService(), getuid())); // Bus calls only.
+    QVERIFY(connection.registerObject(QStringLiteral("/org/harbour/flotsam/Connman"), &identity,
+                                      QDBusConnection::ExportScriptableSlots));
+    const UiBusPolicy policy{getuid(), getegid(), getuid(),
+                            QCoreApplication::applicationFilePath(), QStringLiteral("/nonexistent-proxy")};
+    FakeSync api;
+    UiBus gate(&api, connection, QString(), policy);
+    connect(&api, &FakeSync::StatusChanged, &gate,
+            [&gate](const QVariantMap &status) { gate.sendSignal(QStringLiteral("StatusChanged"), {status}); });
+    QVERIFY(connection.registerVirtualObject(QStringLiteral("/org/harbour/flotsam/Sync"), &gate));
+    const QString fake = directory.path() + QStringLiteral("pretend-ui");
+    QVERIFY(QFile::copy(policy.uiExecutable, fake));
+    // The copied executable exports a forged Identify pointing back at this
+    // legitimate process. It must fail before that claimed identity is trusted.
+    for (const QString &program : {policy.uiExecutable, fake}) {
+        QProcess caller;
+        caller.start(program, {QStringLiteral("--system-ui-probe"), address,
+                     program == fake ? QStringLiteral("denied") : QStringLiteral("allowed")});
+        QVERIFY(caller.waitForStarted());
+        QTRY_COMPARE(caller.state(), QProcess::NotRunning);
+        QCOMPARE(caller.exitCode(), 0);
+    }
+    connection.unregisterObject(QStringLiteral("/org/harbour/flotsam/Sync"));
+    UiBusPolicy proxyPolicy = policy;
+    proxyPolicy.proxyExecutable = fake;
+    UiBus proxyGate(&api, connection, QString(), proxyPolicy);
+    connect(&api, &FakeSync::StatusChanged, &proxyGate,
+            [&proxyGate](const QVariantMap &status) { proxyGate.sendSignal(QStringLiteral("StatusChanged"), {status}); });
+    QVERIFY(connection.registerVirtualObject(QStringLiteral("/org/harbour/flotsam/Sync"), &proxyGate));
+    QProcess proxyCaller;
+    proxyCaller.start(fake, {QStringLiteral("--system-ui-probe"), address, QStringLiteral("allowed")});
+    QVERIFY(proxyCaller.waitForStarted());
+    QTRY_COMPARE(proxyCaller.state(), QProcess::NotRunning);
+    QCOMPARE(proxyCaller.exitCode(), 0);
+    connection.unregisterObject(QStringLiteral("/org/harbour/flotsam/Sync"));
+    UiBusPolicy wrongGroup = policy;
+    wrongGroup.gid = getegid() + 1;
+    UiBus deniedGate(&api, connection, QString(), wrongGroup);
+    QVERIFY(connection.registerVirtualObject(QStringLiteral("/org/harbour/flotsam/Sync"), &deniedGate));
+    QProcess unprivileged;
+    unprivileged.start(policy.uiExecutable, {QStringLiteral("--system-ui-probe"), address, QStringLiteral("denied")});
+    QVERIFY(unprivileged.waitForStarted());
+    QTRY_COMPARE(unprivileged.state(), QProcess::NotRunning);
+    QCOMPARE(unprivileged.exitCode(), 0);
+    QCOMPARE(api.changes, 2); // Only the two authenticated callers reached it.
+    connection.unregisterObject(QStringLiteral("/org/harbour/flotsam/Connman"));
+    DaemonIdentity wrongIdentity(connection, getegid() + 1);
+    QVERIFY(connection.registerObject(QStringLiteral("/org/harbour/flotsam/Connman"), &wrongIdentity,
+                                      QDBusConnection::ExportScriptableSlots));
+    QProcess wrongDaemon;
+    wrongDaemon.start(policy.uiExecutable, {QStringLiteral("--system-ui-probe"), address,
+                                           QStringLiteral("wrong-daemon-group")});
+    QVERIFY(wrongDaemon.waitForStarted());
+    QTRY_COMPARE(wrongDaemon.state(), QProcess::NotRunning);
+    QCOMPARE(wrongDaemon.exitCode(), 0);
+    QDBusConnection::disconnectFromBus(connection.name());
+    bus.terminate();
+    QVERIFY(bus.waitForFinished());
+}
+
+void CommonTest::uiProxyUsesPrivatePeer()
+{
+    QTemporaryDir directory;
+    const QString socket = directory.path() + QStringLiteral("/peer");
+    PrivateBus server;
+    FakeSync sync;
+    QVERIFY(server.listen(socket, QStringLiteral("/org/harbour/flotsam/Sync"), &sync, false, nullptr));
+    QProcess caller;
+    caller.start(QCoreApplication::applicationFilePath(), QStringList()
+                 << QStringLiteral("--ui-probe") << QStringLiteral("unix:path=") + socket);
+    QVERIFY(caller.waitForStarted());
+    QTRY_COMPARE(caller.state(), QProcess::NotRunning);
+    QCOMPARE(caller.exitCode(), 0);
+}
+
+void CommonTest::crossUidBoundary()
+{
+    if (geteuid() != 0) QSKIP("Run this test in the isolated root container fixture");
+    const uid_t deviceUid = 100001;
+    const gid_t trustedGid = 29995;
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    QVERIFY(chmod(QFile::encodeName(directory.path()).constData(), 0755) == 0);
+    const QString guard = directory.path() + QStringLiteral("/guard");
+    QVERIFY(QDir().mkdir(guard));
+    QVERIFY(chown(QFile::encodeName(guard).constData(), 0, trustedGid) == 0);
+    QVERIFY(chmod(QFile::encodeName(guard).constData(), 0750) == 0);
+    const QString socket = guard + QStringLiteral("/peer");
+    FakeBackend backend;
+    ConnmanHelper helper(&backend);
+    PrivateBus server;
+    QVERIFY(server.listen(socket, QStringLiteral("/helper"), &helper, true, nullptr));
+    QVERIFY(chown(QFile::encodeName(socket).constData(), 0, trustedGid) == 0);
+    const QString statePath = guard + QStringLiteral("/state.json");
+    AtomicState state(statePath);
+    QVERIFY(state.save());
+    // save() makes its test parent private; restore the production-style gate.
+    QVERIFY(chmod(QFile::encodeName(guard).constData(), 0750) == 0);
+    QVERIFY(chown(QFile::encodeName(statePath).constData(), deviceUid, trustedGid) == 0);
+    for (const QString &role : {QStringLiteral("ordinary"), QStringLiteral("privileged")}) {
+        QProcess caller;
+        caller.start(QCoreApplication::applicationFilePath(), QStringList()
+                     << QStringLiteral("--probe") << QStringLiteral("unix:path=") + socket
+                     << QStringLiteral("peer") << QStringLiteral("List")
+                     << (role == QLatin1String("privileged") ? QStringLiteral("success")
+                         : QStringLiteral("org.freedesktop.DBus.Error.Disconnected")) << role);
+        QVERIFY(caller.waitForStarted());
+        QTRY_COMPARE(caller.state(), QProcess::NotRunning);
+        QCOMPARE(caller.exitCode(), 0);
+        QProcess reader;
+        reader.start(QCoreApplication::applicationFilePath(), QStringList()
+                     << QStringLiteral("--state-probe") << statePath << role);
+        QVERIFY(reader.waitForStarted());
+        QTRY_COMPARE(reader.state(), QProcess::NotRunning);
+        QCOMPARE(reader.exitCode(), 0);
+    }
+    QCOMPARE(backend.listCalls, 1);
+}
+
 void CommonTest::helperCompareAndSwap()
 {
     FakeBackend backend;
@@ -614,6 +1040,104 @@ void CommonTest::notificationTokensRejectStaleActions()
     QVERIFY(!result.valid);
 }
 
-QTEST_APPLESS_MAIN(CommonTest)
+int main(int argc, char **argv)
+{
+    if ((argc == 7 && QByteArray(argv[1]) == "--probe")
+            || (argc == 4 && QByteArray(argv[1]) == "--state-probe")) {
+        const bool privileged = QByteArray(argv[argc - 1]) == "privileged";
+        if (getuid() != 0 || setgroups(0, nullptr) != 0
+                || setgid(privileged ? 29995 : 100001) != 0 || setuid(100001) != 0) return 4;
+    }
+    QCoreApplication app(argc, argv);
+    const QStringList args = app.arguments();
+    if (args.size() == 4 && args.at(1) == QLatin1String("--system-ui-probe")) {
+        QDBusConnection connection = QDBusConnection::connectToBus(args.at(2), QStringLiteral("system-ui-probe"));
+        const QDBusReply<QString> owner = connection.interface()->serviceOwner(QStringLiteral("org.harbour.flotsam.Sync"));
+        if (!owner.isValid()) return 18;
+        for (int scenario = 0; scenario < 5; ++scenario) {
+            QDBusMessage query = QDBusMessage::createMethodCall(QStringLiteral("org.harbour.flotsam.Connman"),
+                    QStringLiteral("/org/harbour/flotsam/Connman"), QStringLiteral("org.harbour.flotsam.Identity1"),
+                    QStringLiteral("VerifyDaemon"));
+            query << (scenario == 2 ? QStringLiteral("org.harbour.flotsam.Sync")
+                      : scenario == 3 ? connection.baseService()
+                      : scenario == 4 ? QStringLiteral(":99999.99999") : owner.value())
+                  << uint(scenario == 1 ? getuid() + 1 : getuid());
+            QDBusPendingCallWatcher attest(connection.asyncCall(query));
+            QSignalSpy done(&attest, &QDBusPendingCallWatcher::finished);
+            if (!attest.isFinished() && !done.wait(3000)) return 19;
+            const QDBusPendingReply<bool> verified = attest;
+            if (verified.isError() || verified.value() != (scenario == 0
+                    && args.at(3) != QLatin1String("wrong-daemon-group"))) return 20;
+        }
+        if (args.at(3) == QLatin1String("wrong-daemon-group")) return 0;
+        FakeIdentification identity;
+        connection.registerObject(QStringLiteral("/"), &identity, QDBusConnection::ExportScriptableSlots);
+        SyncInterfaceProxy proxy(connection, nullptr, QStringLiteral("org.harbour.flotsam.Sync"));
+        QSignalSpy statusSignals(&proxy, &SyncInterfaceProxy::StatusChanged);
+        QDBusPendingCallWatcher call(proxy.asyncCall(QStringLiteral("Status")));
+        QSignalSpy finished(&call, &QDBusPendingCallWatcher::finished);
+        if (!call.isFinished() && !finished.wait(3000)) return 10;
+        const QDBusPendingReply<QVariantMap> reply = call;
+        QDBusPendingCallWatcher mutation(proxy.asyncCall(QStringLiteral("ForgetEverywhere"), QStringLiteral("fixture-only")));
+        QSignalSpy mutationFinished(&mutation, &QDBusPendingCallWatcher::finished);
+        if (!mutation.isFinished() && !mutationFinished.wait(4000)) return 16;
+        if (args.at(3) == QLatin1String("denied"))
+            return reply.isError() && reply.error().name() == QLatin1String("org.harbour.flotsam.Error.AccessDenied")
+                    && mutation.error().name() == QLatin1String("org.harbour.flotsam.Error.AccessDenied")
+                    && statusSignals.isEmpty() ? 0 : 11;
+        if (mutation.isError()) return 17;
+        if (reply.isError() || !reply.value().value(QStringLiteral("fixture")).toBool()) return 12;
+        if (statusSignals.isEmpty()) statusSignals.wait(1000);
+        if (statusSignals.size() != 1) return 13;
+        QDBusPendingCallWatcher echoCall(proxy.asyncCall(QStringLiteral("Echo"), QStringLiteral("fixture"),
+                QVariantMap{{QStringLiteral("n"), 7}}, QStringList() << QStringLiteral("item"), true, 9));
+        QSignalSpy echoFinished(&echoCall, &QDBusPendingCallWatcher::finished);
+        if (!echoCall.isFinished() && !echoFinished.wait(4000)) return 14;
+        const QDBusPendingReply<QString> echo = echoCall;
+        if (echo.isError() || echo.value() != QLatin1String("ok")) return 14;
+        QDBusPendingCallWatcher inherited(proxy.asyncCall(QStringLiteral("deleteLater")));
+        QSignalSpy inheritedFinished(&inherited, &QDBusPendingCallWatcher::finished);
+        if (!inherited.isFinished() && !inheritedFinished.wait(4000)) return 15;
+        return inherited.isError() ? 0 : 15;
+    }
+    if (args.size() == 4 && args.at(1) == QLatin1String("--state-probe")) {
+        QFile file(args.at(2));
+        const bool opened = file.open(QIODevice::ReadOnly);
+        file.close();
+        const bool writable = file.open(QIODevice::WriteOnly | QIODevice::Append);
+        const bool expected = args.at(3) == QLatin1String("privileged");
+        return opened == expected && writable == expected ? 0 : 5;
+    }
+    if (args.size() == 3 && args.at(1) == QLatin1String("--ui-probe")) {
+        const QDBusConnection connection = QDBusConnection::connectToPeer(args.at(2), QStringLiteral("ui-probe"));
+        SyncInterfaceProxy proxy(connection);
+        QSignalSpy statusSignals(&proxy, &SyncInterfaceProxy::StatusChanged);
+        QDBusPendingCallWatcher watcher(proxy.asyncCall(QStringLiteral("Status")));
+        QSignalSpy finished(&watcher, &QDBusPendingCallWatcher::finished);
+        if (!watcher.isFinished() && !finished.wait(3000)) return 6;
+        QDBusPendingReply<QVariantMap> reply = watcher;
+        if (statusSignals.isEmpty()) statusSignals.wait(3000);
+        return !reply.isError() && reply.value().value(QStringLiteral("fixture")).toBool()
+                && statusSignals.size() == 1 ? 0 : 7;
+    }
+    if ((args.size() == 6 || args.size() == 7) && args.at(1) == QLatin1String("--probe")) {
+        const bool peer = args.at(3) == QLatin1String("peer");
+        const QDBusConnection connection = peer
+                ? QDBusConnection::connectToPeer(args.at(2), QStringLiteral("probe"))
+                : QDBusConnection::connectToBus(args.at(2), QStringLiteral("probe"));
+        QDBusMessage call = QDBusMessage::createMethodCall(
+                peer ? QString() : QStringLiteral("org.harbour.flotsam.Test"),
+                QStringLiteral("/helper"), QStringLiteral("org.harbour.flotsam.Connman"), args.at(4));
+        if (args.at(4) == QLatin1String("Export")) call.setArguments(QVariantList() << QString());
+        if (args.at(4) == QLatin1String("CompareAndApply")) call.setArguments(QVariantList() << QString() << QString() << false);
+        if (args.at(4) == QLatin1String("CompareAndRemove")) call.setArguments(QVariantList() << QString() << QString());
+        const QDBusMessage reply = connection.call(call, QDBus::Block, 3000);
+        return args.at(5) == QLatin1String("success")
+                ? (reply.type() == QDBusMessage::ReplyMessage && reply.arguments().value(0).toString() == QLatin1String("[]") ? 0 : 2)
+                : (reply.errorName() == args.at(5) ? 0 : 3);
+    }
+    CommonTest test;
+    return QTest::qExec(&test, argc, argv);
+}
 
 #include "tst_common.moc"

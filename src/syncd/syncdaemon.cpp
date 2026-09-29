@@ -5,14 +5,11 @@
  */
 
 #include "syncdaemon.h"
-#include "notificationtoken.h"
 
 #include "reconciler.h"
 
 #include <networkmanager.h>
 
-#include <QDBusInterface>
-#include <QDBusPendingCallWatcher>
 #include <QDBusPendingReply>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -22,10 +19,6 @@
 #include <algorithm>
 
 namespace {
-
-const char HelperService[] = "org.harbour.flotsam.Connman";
-const char HelperPath[] = "/org/harbour/flotsam/Connman";
-const char HelperInterface[] = "org.harbour.flotsam.Connman";
 
 QString phaseName(int phase)
 {
@@ -146,8 +139,6 @@ SyncDaemon::SyncDaemon(QObject *parent)
             this, &SyncDaemon::recordWritten);
     connect(&m_webDav, &WebDavClient::requestFailed,
             this, &SyncDaemon::webDavFailed);
-    connect(&m_notifications, &NotificationManager::actionInvoked,
-            this, &SyncDaemon::notificationInvoked);
 
     m_periodicTimer.setInterval(6 * 60 * 60 * 1000);
     connect(&m_periodicTimer, &QTimer::timeout, this, [this]() {
@@ -170,6 +161,9 @@ bool SyncDaemon::initialize(QString *error)
     m_state = m_stateStore.object();
     m_lastResult = m_state.value(QStringLiteral("lastResult")).toString();
     m_lastError = m_state.value(QStringLiteral("lastError")).toString();
+    if (m_state.value(QStringLiteral("migrationNeedsReview")).toBool()) {
+        m_lastError = QStringLiteral("State moved to protected storage. Review pending changes, then use Sync now to resume.");
+    }
     m_lastSync = QDateTime::fromString(m_state.value(QStringLiteral("lastSync")).toString(),
                                       Qt::ISODate);
     m_networkManager = new NetworkManager(this);
@@ -192,7 +186,7 @@ bool SyncDaemon::initialize(QString *error)
 QVariantMap SyncDaemon::Status() const
 {
     QVariantMap status;
-    status.insert(QStringLiteral("version"), 1);
+    status.insert(QStringLiteral("version"), 3);
     status.insert(QStringLiteral("phase"), phaseName(m_phase));
     status.insert(QStringLiteral("syncing"), m_phase != Idle);
     status.insert(QStringLiteral("setupComplete"),
@@ -444,27 +438,31 @@ void SyncDaemon::ImportWifiQr(const QString &payload)
     bool hasBase = false;
     const NetworkRecord base = baseRecord(id, &hasBase);
     const NetworkRecord record = versioned(source, hasBase ? &base : nullptr, m_state);
-    QDBusInterface helper(QString::fromLatin1(HelperService), QString::fromLatin1(HelperPath),
-                          QString::fromLatin1(HelperInterface), QDBusConnection::systemBus());
-    QDBusPendingCallWatcher *watcher = new QDBusPendingCallWatcher(
-            helper.asyncCall(QStringLiteral("CompareAndApply"), QString(),
-                             QString::fromUtf8(record.toJsonData()), false), this);
+    HelperCall *watcher = new HelperCall(QStringLiteral("CompareAndApply"),
+            QVariantList() << QString() << QString::fromUtf8(record.toJsonData()) << false, this);
     watcher->setProperty("userOperation", QStringLiteral("import"));
     watcher->setProperty("networkId", id);
     watcher->setProperty("recordJson", QString::fromUtf8(record.toJsonData()));
     m_phase = Applying;
     emitChanged();
-    connect(watcher, &QDBusPendingCallWatcher::finished,
+    connect(watcher, &HelperCall::finished,
             this, &SyncDaemon::mutationFinished);
 }
 
 void SyncDaemon::ManualSync()
 {
+    const bool migrationNeedsReview = m_state.value(QStringLiteral("migrationNeedsReview")).toBool();
+    m_state.remove(QStringLiteral("migrationNeedsReview"));
+    if (!saveState()) {
+        if (migrationNeedsReview) m_state.insert(QStringLiteral("migrationNeedsReview"), true);
+        return;
+    }
     requestSync(QStringLiteral("manual request"));
 }
 
 void SyncDaemon::requestSync(const QString &reason)
 {
+    if (m_state.value(QStringLiteral("migrationNeedsReview")).toBool()) return;
     if (!m_state.value(QStringLiteral("setupComplete")).toBool()) {
         reportError(QStringLiteral("Complete setup before synchronizing"));
         return;
@@ -674,17 +672,14 @@ void SyncDaemon::requestLocalInventory(bool forSync)
     m_inventoryForSync = forSync;
     m_phase = ListingLocal;
     emitChanged();
-    QDBusInterface helper(QString::fromLatin1(HelperService), QString::fromLatin1(HelperPath),
-                          QString::fromLatin1(HelperInterface), QDBusConnection::systemBus());
-    QDBusPendingCallWatcher *watcher = new QDBusPendingCallWatcher(
-            helper.asyncCall(QStringLiteral("List")), this);
-    connect(watcher, &QDBusPendingCallWatcher::finished,
+    HelperCall *watcher = new HelperCall(QStringLiteral("List"), QVariantList(), this);
+    connect(watcher, &HelperCall::finished,
             this, &SyncDaemon::localInventoryFinished);
 }
 
-void SyncDaemon::localInventoryFinished(QDBusPendingCallWatcher *watcher)
+void SyncDaemon::localInventoryFinished(HelperCall *watcher)
 {
-    QDBusPendingReply<QString> reply = *watcher;
+    QDBusPendingReply<QString> reply(watcher->reply());
     watcher->deleteLater();
     if (reply.isError()) {
         finishSync(false, QStringLiteral("Cannot enumerate saved Wi-Fi networks: %1")
@@ -967,21 +962,19 @@ void SyncDaemon::processNextAction()
 
 void SyncDaemon::invokeHelper(const SyncAction &action)
 {
-    QDBusInterface helper(QString::fromLatin1(HelperService), QString::fromLatin1(HelperPath),
-                          QString::fromLatin1(HelperInterface), QDBusConnection::systemBus());
-    QDBusPendingCall call = action.type == SyncAction::Apply
-            ? helper.asyncCall(QStringLiteral("CompareAndApply"), action.expectedFingerprint,
-                               QString::fromUtf8(action.record.toJsonData()), true)
-            : helper.asyncCall(QStringLiteral("CompareAndRemove"), action.id,
-                               action.expectedFingerprint);
-    QDBusPendingCallWatcher *watcher = new QDBusPendingCallWatcher(call, this);
-    connect(watcher, &QDBusPendingCallWatcher::finished,
+    HelperCall *watcher = action.type == SyncAction::Apply
+            ? new HelperCall(QStringLiteral("CompareAndApply"), QVariantList()
+                            << action.expectedFingerprint << QString::fromUtf8(action.record.toJsonData())
+                            << true, this)
+            : new HelperCall(QStringLiteral("CompareAndRemove"), QVariantList()
+                            << action.id << action.expectedFingerprint, this);
+    connect(watcher, &HelperCall::finished,
             this, &SyncDaemon::mutationFinished);
 }
 
-void SyncDaemon::mutationFinished(QDBusPendingCallWatcher *watcher)
+void SyncDaemon::mutationFinished(HelperCall *watcher)
 {
-    QDBusPendingReply<QString> reply = *watcher;
+    QDBusPendingReply<QString> reply(watcher->reply());
     const QString userOperation = watcher->property("userOperation").toString();
     const QString userNetworkId = watcher->property("networkId").toString();
     const QString userRecordJson = watcher->property("recordJson").toString();
@@ -1379,16 +1372,14 @@ void SyncDaemon::applyUserRecord(const NetworkRecord &source, bool activeEditCon
     const QString id = record.networkId();
     const QString expected = m_local.contains(id)
             ? QString::fromLatin1(m_local.value(id).record.contentFingerprint()) : QString();
-    QDBusInterface helper(QString::fromLatin1(HelperService), QString::fromLatin1(HelperPath),
-                          QString::fromLatin1(HelperInterface), QDBusConnection::systemBus());
-    QDBusPendingCallWatcher *watcher = new QDBusPendingCallWatcher(
-            helper.asyncCall(QStringLiteral("CompareAndApply"), expected,
-                             QString::fromUtf8(record.toJsonData()), activeEditConfirmed), this);
+    HelperCall *watcher = new HelperCall(QStringLiteral("CompareAndApply"),
+            QVariantList() << expected << QString::fromUtf8(record.toJsonData())
+                           << activeEditConfirmed, this);
     watcher->setProperty("userOperation", QStringLiteral("edit"));
     watcher->setProperty("networkId", id);
     m_phase = Applying;
     emitChanged();
-    connect(watcher, &QDBusPendingCallWatcher::finished,
+    connect(watcher, &HelperCall::finished,
             this, &SyncDaemon::mutationFinished);
 }
 
@@ -1541,16 +1532,13 @@ void SyncDaemon::ForgetEverywhere(const QString &networkId)
         requestSync(QStringLiteral("forget everywhere"));
         return;
     }
-    QDBusInterface helper(QString::fromLatin1(HelperService), QString::fromLatin1(HelperPath),
-                          QString::fromLatin1(HelperInterface), QDBusConnection::systemBus());
-    QDBusPendingCallWatcher *watcher = new QDBusPendingCallWatcher(
-            helper.asyncCall(QStringLiteral("CompareAndRemove"), networkId,
-                             QString::fromLatin1(m_local.value(networkId).record.contentFingerprint())), this);
+    HelperCall *watcher = new HelperCall(QStringLiteral("CompareAndRemove"), QVariantList()
+            << networkId << QString::fromLatin1(m_local.value(networkId).record.contentFingerprint()), this);
     watcher->setProperty("userOperation", QStringLiteral("forget"));
     watcher->setProperty("networkId", networkId);
     m_phase = Applying;
     emitChanged();
-    connect(watcher, &QDBusPendingCallWatcher::finished,
+    connect(watcher, &HelperCall::finished,
             this, &SyncDaemon::mutationFinished);
 }
 
@@ -1581,32 +1569,11 @@ void SyncDaemon::notifyAttention(const QString &networkId, const QString &kind, 
     saveState();
     const QString key = kind + QLatin1Char(':') + networkId;
     if (actions) {
-        m_notifications.showNewNetwork(key, token, recordForDisplay(networkId).displayName(),
+        m_notifications.showNewNetwork(key, recordForDisplay(networkId).displayName(),
                                        baseRecord(networkId).tombstone);
     } else {
         m_notifications.showAttention(key, kind);
     }
-}
-
-void SyncDaemon::notificationInvoked(const QString &token, const QString &action)
-{
-    NotificationAction(token, action);
-}
-
-void SyncDaemon::NotificationAction(const QString &token, const QString &action)
-{
-    QJsonObject tokens = m_state.value(QStringLiteral("notificationTokens")).toObject();
-    const NotificationTokenResult result = NotificationToken::take(
-            &tokens, token, action,
-            m_state.value(QStringLiteral("pending")).toObject().keys(),
-            QDateTime::currentDateTimeUtc());
-    m_state.insert(QStringLiteral("notificationTokens"), tokens);
-    saveState();
-    if (!result.valid) {
-        reportError(result.error);
-        return;
-    }
-    NewNetworkChoice(result.networkId, action);
 }
 
 void SyncDaemon::clearAttention(const QString &networkId)
@@ -1636,14 +1603,16 @@ void SyncDaemon::setNetworkError(const QString &networkId, const QString &messag
     m_state.insert(QStringLiteral("errors"), errors);
 }
 
-void SyncDaemon::saveState()
+bool SyncDaemon::saveState()
 {
     m_stateStore.setObject(m_state);
     QString error;
     if (!m_stateStore.save(&error)) {
         m_lastError = QStringLiteral("Cannot save private synchronization state: %1").arg(error);
         emit OperationFailed(m_lastError);
+        return false;
     }
+    return true;
 }
 
 void SyncDaemon::emitChanged()

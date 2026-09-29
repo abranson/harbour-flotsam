@@ -99,10 +99,68 @@ minutes. Unsupported schemas, malformed records, missing credentials, and a
 deleted sync directory pause only unsafe work rather than overwriting data.
 
 The root helper performs no network I/O or persistent storage, and its systemd
-sandbox denies IP networking. It validates caller UIDs, JSON keys, record
-sizes, identities, fingerprints, and canonical ConnMan paths. Mutations
+sandbox denies IP networking. It validates JSON keys, record sizes, identities,
+fingerprints, and canonical ConnMan paths. Mutations
 preserve local-only configuration and require an expected portable fingerprint
 so concurrent changes return `Conflict`.
+
+### Local security boundary
+
+The UI uses `org.harbour.flotsam.Sync` on the **system bus**. Every management
+call requires the device UID, effective privileged group, and the installed
+Flotsam UI executable. For sandboxed calls, the daemon first verifies the
+installed privileged `xdg-dbus-proxy`, then checks the UI process identified by
+that proxy. Direct calls must use the installed inode; Sailjail's root-owned,
+non-writable private-bin copy must match the installed executable's SHA-256.
+Caller-owned copies are not accepted. An unverified caller's `Identify` reply or application name is never
+accepted. Updates are unicast to authenticated UI connections, not broadcast.
+The UI asynchronously asks the root-only helper bus service to verify the daemon
+owner's UID and effective privileged group, then pins that unique bus connection
+before sending passwords. This read-only `Identity1.VerifyDaemon` attestation
+uses host process credentials, which the UI's PID namespace cannot inspect.
+The session name
+provides activation/Ping only. Notifications open the app for decisions.
+
+- Helper socket: `/run/harbour-flotsam-helper/connman.socket` (0660), behind a
+  root-owned `root:privileged` 0750 directory. Its cross-UID D-Bus authentication
+  permits anonymous peers **only after the kernel filesystem permission gate**;
+  there is no abstract or TCP socket. No network operation is exported on the
+  system bus; the public identity check returns only a boolean and adds no
+  capabilities or access to secrets.
+- State: `/var/lib/harbour-flotsam/<uid>/state.json` (0600), with the same
+  root-owned privileged-group 0770 parent and per-user 0700 directory.
+
+The desktop entry requests Sailjail's `Privileged` permission, so the trusted UI
+runs as the device user with the privileged group, not as root. Sandboxing stays
+enabled. The custom `Flotsam` permission permits the management API, but does not
+expose the helper socket, Accounts store, or persistent state. Passwords,
+including remote conflict candidates, are not sent over the session bus.
+Launch the app through its desktop entry. The daemon stays
+setgid, not root; it clears caller-supplied environment overrides before Qt
+initialization, disables dumps, and serializes startup with a protected lock.
+
+On upgrade, valid legacy state is copied atomically to protected storage and the
+old file is removed only after a successful save. Invalid, linked, oversized,
+or ambiguously duplicated state stops startup. Migration preserves pending
+decisions but pauses automatic reconciliation until **Sync now** is selected
+after reviewing them. Uninstall does not delete state, ConnMan profiles, or cloud
+records. Never downgrade to an old daemon against a hardened installation.
+
+This boundary excludes ordinary processes sharing the device UID; it does not
+defend against compromised Flotsam UI/daemon code, root, the kernel,
+already-privileged platform components, or a compromised trusted
+Nextcloud/Accounts/SSO service. Executable checks are application access control,
+not proof against injection into trusted privileged code. Another privileged
+component could deny service by taking the bus name; ordinary same-UID name
+spoofing is rejected by the UI's daemon-credential check. Filesystem permissions are
+not encryption, and migration cannot undo any disclosure before the upgrade.
+The hardening needs Sailfish on-device integration testing before release.
+
+The common test executable starts its own temporary D-Bus daemon and separate
+caller processes. Run `tst_flotsam_common crossUidBoundary` as root only in a
+disposable test environment to exercise both allowed and denied kernel group
+checks with synthetic state. CI runs this fixture in its disposable runner;
+ordinary non-root test runs explicitly skip it.
 
 ## License
 

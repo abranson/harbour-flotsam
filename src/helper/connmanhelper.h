@@ -23,12 +23,12 @@ public:
     explicit ConnmanHelper(ConnmanBackend *backend, QObject *parent = nullptr);
 
 public slots:
-    QString List();
-    QString Export(const QString &networkId);
-    QString CompareAndApply(const QString &expectedFingerprint,
+    Q_SCRIPTABLE QString List();
+    Q_SCRIPTABLE QString Export(const QString &networkId);
+    Q_SCRIPTABLE QString CompareAndApply(const QString &expectedFingerprint,
                             const QString &recordJson,
                             bool allowActiveReconnect);
-    QString CompareAndRemove(const QString &networkId,
+    Q_SCRIPTABLE QString CompareAndRemove(const QString &networkId,
                              const QString &expectedFingerprint);
 
 private:

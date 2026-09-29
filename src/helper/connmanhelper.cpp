@@ -5,16 +5,12 @@
  */
 
 #include "connmanhelper.h"
+#include <QDBusConnection>
 
-#include <QDBusConnectionInterface>
-#include <QDBusReply>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QRegularExpression>
-#include <QSet>
-#include <pwd.h>
-#include <unistd.h>
 
 namespace {
 
@@ -32,20 +28,6 @@ bool isActive(const QVariantMap &properties)
             || state == QLatin1String("association") || state == QLatin1String("configuration");
 }
 
-QSet<uint> permittedUids()
-{
-    QSet<uint> result;
-    result.insert(0);
-    const char *names[] = { "defaultuser", "nemo" };
-    for (const char *name : names) {
-        const passwd *entry = getpwnam(name);
-        if (entry) {
-            result.insert(entry->pw_uid);
-        }
-    }
-    return result;
-}
-
 }
 
 namespace Flotsam {
@@ -61,11 +43,11 @@ bool ConnmanHelper::authorizeCaller()
     if (!calledFromDBus()) {
         return true;
     }
-    QDBusConnectionInterface *interface = connection().interface();
-    const QDBusReply<uint> uid = interface->serviceUid(message().service());
-    if (!uid.isValid() || !permittedUids().contains(uid.value())) {
+    // Authorization is the kernel-enforced protected Unix socket. Reject any
+    // accidental registration on a message bus, including the session bus.
+    if (connection().interface()) {
         sendErrorReply(QStringLiteral("org.harbour.flotsam.Error.AccessDenied"),
-                       QStringLiteral("Caller is not the Sailfish device user"));
+                       QStringLiteral("Use the protected helper endpoint"));
         return false;
     }
     return true;

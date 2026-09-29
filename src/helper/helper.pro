@@ -6,6 +6,9 @@ QT += core dbus network
 CONFIG += c++11 link_pkgconfig
 
 INCLUDEPATH += ../common
+include(../common/security.pri)
+HEADERS += ../common/uibus.h
+SOURCES += ../common/uibus.cpp
 
 HEADERS += \
     connmanbackend.h \

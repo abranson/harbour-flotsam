@@ -9,7 +9,7 @@ Exec=/usr/bin/harbour-flotsam
 Icon=harbour-flotsam
 
 [X-Sailjail]
-Permissions=Flotsam;Camera
+Permissions=Privileged;Flotsam;Camera
 OrganizationName=uk.co.nationalfantastic
 ApplicationName=harbour-flotsam
 ExecDBus=harbour-flotsam --prestart

@@ -2,10 +2,19 @@
  "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
 <node name="/org/harbour/flotsam/Connman">
   <interface name="org.harbour.flotsam.Connman">
-    <annotation name="org.harbour.flotsam.InterfaceVersion" value="1"/>
+    <!-- Operations exist only on the protected peer socket, not the system bus. -->
+    <annotation name="org.harbour.flotsam.InterfaceVersion" value="2"/>
     <method name="List"><arg name="json" type="s" direction="out"/></method>
     <method name="Export"><arg name="networkId" type="s" direction="in"/><arg name="json" type="s" direction="out"/></method>
     <method name="CompareAndApply"><arg name="expectedFingerprint" type="s" direction="in"/><arg name="recordJson" type="s" direction="in"/><arg name="allowActiveReconnect" type="b" direction="in"/><arg name="resultJson" type="s" direction="out"/></method>
     <method name="CompareAndRemove"><arg name="networkId" type="s" direction="in"/><arg name="expectedFingerprint" type="s" direction="in"/><arg name="resultJson" type="s" direction="out"/></method>
+  </interface>
+  <!-- Read-only system-bus attestation; no credentials or ConnMan operations. -->
+  <interface name="org.harbour.flotsam.Identity1">
+    <method name="VerifyDaemon">
+      <arg name="owner" type="s" direction="in"/>
+      <arg name="uid" type="u" direction="in"/>
+      <arg name="verified" type="b" direction="out"/>
+    </method>
   </interface>
 </node>

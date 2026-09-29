@@ -6,6 +6,9 @@
 
 #include "connmanbackend.h"
 #include "connmanhelper.h"
+#include "privatebus.h"
+#include "security.h"
+#include "uibus.h"
 
 #include <QCoreApplication>
 #include <QDBusConnection>
@@ -19,9 +22,20 @@ int main(int argc, char **argv)
 
     Flotsam::RealConnmanBackend backend;
     Flotsam::ConnmanHelper helper(&backend);
+    Flotsam::PrivateBus privateBus;
+    QString error;
+    if (!Flotsam::Security::trustedDirectory(
+                QStringLiteral("/run/harbour-flotsam-helper"), false)
+            || !privateBus.listen(Flotsam::Security::helperSocket(),
+                QStringLiteral("/org/harbour/flotsam/Connman"), &helper, true, &error)) {
+        qCritical() << "Cannot start protected ConnMan endpoint:" << error;
+        return 1;
+    }
+    // Public identity attestation only; network operations remain private.
     QDBusConnection bus = QDBusConnection::systemBus();
-    if (!bus.registerObject(QStringLiteral("/org/harbour/flotsam/Connman"), &helper,
-                            QDBusConnection::ExportAllSlots)
+    Flotsam::DaemonIdentity identity(bus);
+    if (!bus.registerObject(QStringLiteral("/org/harbour/flotsam/Connman"), &identity,
+                            QDBusConnection::ExportScriptableSlots)
             || !bus.registerService(QStringLiteral("org.harbour.flotsam.Connman"))) {
         qCritical() << "Unable to register the Flotsam ConnMan helper on the system bus:"
                     << bus.lastError().message();

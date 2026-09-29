@@ -6,6 +6,9 @@ CONFIG += c++11 link_pkgconfig
 PKGCONFIG += sailfishapp
 
 INCLUDEPATH += ../common
+include(../common/security.pri)
+HEADERS += ../common/uibus.h
+SOURCES += ../common/uibus.cpp
 HEADERS += applicationactivation.h appcontroller.h ../common/networkrecord.h
 SOURCES += applicationactivation.cpp appcontroller.cpp main.cpp ../common/networkrecord.cpp
 
