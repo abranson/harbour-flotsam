@@ -34,7 +34,7 @@ public:
     explicit NotificationManager(QObject *parent = nullptr);
 
     void showNewNetwork(const QString &deduplicationKey, const QString &token,
-                        const QString &displayName);
+                        const QString &displayName, bool readded);
     void showAttention(const QString &deduplicationKey, const QString &kind);
 
 signals:

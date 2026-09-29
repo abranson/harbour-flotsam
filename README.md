@@ -44,8 +44,12 @@ WebDAV ETags, and never orders edits by clock time. Conditional writes use
 
 “Forget everywhere” creates an indefinitely retained tombstone without a
 password. A tombstone overrides a device block and removes all matching local
-ConnMan entries, including an active one. Explicitly learning the network
-again offers a new active revision descended from that tombstone.
+ConnMan entries, including an active one. Completed deletions are hidden from
+the network list, but their sync metadata is retained. Learning the network
+again after processing that deletion asks whether to sync it again or keep it
+only on this device. Choosing to sync creates a new active revision descended
+from the tombstone; other devices can then restore it. A newer deletion still
+overrides an older local choice.
 
 ## Building
 
@@ -66,6 +70,16 @@ make check
 
 Build an RPM through the Sailfish SDK in the usual way. The spec is in
 `rpm/harbour-flotsam.spec`.
+
+### GitHub Actions
+
+The [build workflow](.github/workflows/build.yml) runs on pushes, pull requests,
+and manual dispatches. It runs the common and mock WebDAV tests with host Qt 5,
+then builds aarch64 RPMs using `coderus/sailfishos-platform-sdk:5.2.0.15`.
+The SDK build also checks compatibility with Sailfish's Qt 5.6 baseline.
+Download the application and debug RPMs from the `harbour-flotsam-aarch64`
+artifact on the workflow run. No repository secrets are required, and this
+workflow does not publish releases or upload to a package repository.
 
 ## Runtime behavior
 

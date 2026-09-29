@@ -9,6 +9,7 @@
 #include <QCryptographicHash>
 #include <QJsonDocument>
 #include <QJsonParseError>
+#include <QMap>
 #include <QRegularExpression>
 #include <QUuid>
 
@@ -70,9 +71,127 @@ QString escapedWifiField(const QString &value)
     return result;
 }
 
+bool parseWifiFields(const QString &payload, QMap<QString, QString> *fields,
+                     QString *error)
+{
+    if (!payload.startsWith(QStringLiteral("WIFI:"))) {
+        setError(error, QStringLiteral("This is not a Wi-Fi QR code"));
+        return false;
+    }
+
+    QString key;
+    QString value;
+    bool readingValue = false;
+    bool escaped = false;
+    const auto finishField = [&]() -> bool {
+        if (key.isEmpty() && !readingValue) {
+            return true;
+        }
+        if (key.isEmpty() || !readingValue) {
+            setError(error, QStringLiteral("Malformed Wi-Fi QR field"));
+            return false;
+        }
+        const QString normalizedKey = key.trimmed().toUpper();
+        if (fields->contains(normalizedKey)) {
+            setError(error, QStringLiteral("Duplicate Wi-Fi QR field: %1")
+                     .arg(normalizedKey));
+            return false;
+        }
+        fields->insert(normalizedKey, value);
+        return true;
+    };
+
+    for (int i = 5; i < payload.size(); ++i) {
+        const QChar character = payload.at(i);
+        if (escaped) {
+            (readingValue ? value : key).append(character);
+            escaped = false;
+        } else if (character == QLatin1Char('\\')) {
+            escaped = true;
+        } else if (!readingValue && character == QLatin1Char(':')) {
+            readingValue = true;
+        } else if (character == QLatin1Char(';')) {
+            if (!finishField()) {
+                return false;
+            }
+            key.clear();
+            value.clear();
+            readingValue = false;
+        } else {
+            (readingValue ? value : key).append(character);
+        }
+    }
+    if (escaped) {
+        setError(error, QStringLiteral("Wi-Fi QR code ends with an escape character"));
+        return false;
+    }
+    return finishField();
+}
+
 }
 
 namespace Flotsam {
+
+NetworkRecord NetworkRecord::fromWifiQr(const QString &payload, QString *error)
+{
+    if (error) {
+        error->clear();
+    }
+    NetworkRecord record;
+    if (payload.toUtf8().size() > 4096) {
+        setError(error, QStringLiteral("Wi-Fi QR code is too large"));
+        return record;
+    }
+
+    QMap<QString, QString> fields;
+    if (!parseWifiFields(payload, &fields, error) || !fields.contains(QStringLiteral("S"))) {
+        if (error && error->isEmpty()) {
+            setError(error, QStringLiteral("Wi-Fi QR code has no network name"));
+        }
+        return record;
+    }
+
+    const QString type = fields.value(QStringLiteral("T")).trimmed().toUpper();
+    if (type.isEmpty() || type == QLatin1String("NOPASS")
+            || type == QLatin1String("OPEN")) {
+        record.securityFamily = QStringLiteral("open");
+        record.securityHint = QStringLiteral("none");
+    } else if (type == QLatin1String("WEP")) {
+        record.securityFamily = QStringLiteral("wep");
+        record.securityHint = QStringLiteral("wep");
+    } else if (type == QLatin1String("WPA") || type == QLatin1String("WPA2")
+               || type == QLatin1String("WPA/WPA2")
+               || type == QLatin1String("WPA-PSK")
+               || type == QLatin1String("WPA2-PSK")) {
+        record.securityFamily = QStringLiteral("personal");
+        record.securityHint = QStringLiteral("psk");
+    } else if (type == QLatin1String("WPA3") || type == QLatin1String("SAE")
+               || type == QLatin1String("WPA3-SAE")
+               || type == QLatin1String("WPA3-PERSONAL")
+               || type == QLatin1String("WPA2/WPA3")) {
+        record.securityFamily = QStringLiteral("personal");
+        record.securityHint = QStringLiteral("sae");
+    } else {
+        setError(error, QStringLiteral("Unsupported Wi-Fi QR security type"));
+        return NetworkRecord();
+    }
+
+    const QString hidden = fields.value(QStringLiteral("H")).trimmed().toLower();
+    if (!hidden.isEmpty() && hidden != QLatin1String("true")
+            && hidden != QLatin1String("false") && hidden != QLatin1String("1")
+            && hidden != QLatin1String("0")) {
+        setError(error, QStringLiteral("Invalid hidden-network value"));
+        return NetworkRecord();
+    }
+    record.ssid = fields.value(QStringLiteral("S")).toUtf8();
+    record.passphrase = fields.value(QStringLiteral("P"));
+    record.hidden = hidden == QLatin1String("true") || hidden == QLatin1String("1");
+    record.autoConnect = true;
+    if (!record.isValid(error, false)) {
+        return NetworkRecord();
+    }
+    return record;
+}
 
 QString NetworkRecord::deriveNetworkId(const QByteArray &rawSsid, const QString &family)
 {

@@ -5,6 +5,7 @@
  */
 
 #include "atomicstate.h"
+#include "applicationactivation.h"
 #include "connmanhelper.h"
 #include "connmanutil.h"
 #include "networkrecord.h"
@@ -97,6 +98,9 @@ private slots:
     void passwordValidation_data();
     void passwordValidation();
     void qrEscaping();
+    void wifiQrParsing();
+    void wifiQrRejectsInvalidData_data();
+    void wifiQrRejectsInvalidData();
     void fingerprintStability();
     void strictJsonValidation();
     void tombstoneRules();
@@ -104,12 +108,15 @@ private slots:
     void pathValidation();
     void reconcile_data();
     void reconcile();
+    void readditionLifecycle();
+    void completedDeletionVisibility();
     void atomicPrivateState();
     void helperCompareAndSwap();
     void helperRemovesMultipleAdapters();
     void helperRollsBack();
     void helperRemovesFailedNewService();
     void notificationTokensRejectStaleActions();
+    void applicationActivationRoutesNetworks();
 };
 
 void CommonTest::securityNormalization()
@@ -141,6 +148,35 @@ void CommonTest::macIndependentIdentity()
                                              NetworkRecord::normalizeSecurityFamily(QStringList() << "sae")));
 }
 
+void CommonTest::applicationActivationRoutesNetworks()
+{
+    ApplicationActivation activation;
+    int activateCount = 0;
+    QString openedNetworkId;
+    connect(&activation, &ApplicationActivation::activateRequested,
+            [&activateCount]() { ++activateCount; });
+    connect(&activation, &ApplicationActivation::openNetworkRequested,
+            [&openedNetworkId](const QString &networkId) {
+        openedNetworkId = networkId;
+    });
+
+    activation.Activate(QVariantMap());
+    QCOMPARE(activateCount, 1);
+    QVERIFY(openedNetworkId.isEmpty());
+
+    const QString networkId(64, QLatin1Char('a'));
+    activation.Open(QStringList() << QStringLiteral("flotsam://network/") + networkId,
+                    QVariantMap());
+    QCOMPARE(activateCount, 2);
+    QCOMPARE(openedNetworkId, networkId);
+
+    openedNetworkId.clear();
+    activation.Open(QStringList() << QStringLiteral("https://example.com/not-a-network"),
+                    QVariantMap());
+    QCOMPARE(activateCount, 3);
+    QVERIFY(openedNetworkId.isEmpty());
+}
+
 void CommonTest::passwordValidation_data()
 {
     QTest::addColumn<QString>("family");
@@ -169,9 +205,64 @@ void CommonTest::passwordValidation()
 void CommonTest::qrEscaping()
 {
     NetworkRecord value = record(QStringLiteral("pa\\ss:word"));
-    QCOMPARE(value.qrPayload(), QStringLiteral("WIFI:T:WPA;S:Cafe\\;One;P:pa\\\\ss\\:word;;"));
+    const QString payload = value.qrPayload();
+    QCOMPARE(payload, QStringLiteral("WIFI:T:WPA;S:Cafe\\;One;P:pa\\\\ss\\:word;;"));
+    QString error;
+    const NetworkRecord parsed = NetworkRecord::fromWifiQr(payload, &error);
+    QVERIFY2(error.isEmpty(), qPrintable(error));
+    QCOMPARE(parsed.ssid, value.ssid);
+    QCOMPARE(parsed.securityFamily, value.securityFamily);
+    QCOMPARE(parsed.passphrase, value.passphrase);
     value.ssid = QByteArray::fromHex("ff00");
     QVERIFY(value.qrPayload().isEmpty());
+}
+
+void CommonTest::wifiQrParsing()
+{
+    QString error;
+    NetworkRecord parsed = NetworkRecord::fromWifiQr(
+            QStringLiteral("WIFI:T:nopass;S:Guest\\; Wi-Fi;H:false;;"), &error);
+    QVERIFY2(error.isEmpty(), qPrintable(error));
+    QCOMPARE(parsed.displayName(), QStringLiteral("Guest; Wi-Fi"));
+    QCOMPARE(parsed.securityFamily, QStringLiteral("open"));
+    QCOMPARE(parsed.securityHint, QStringLiteral("none"));
+    QVERIFY(parsed.autoConnect);
+    QVERIFY(!parsed.hidden);
+
+    parsed = NetworkRecord::fromWifiQr(
+            QStringLiteral("WIFI:T:WPA3;S:Private;P:password1;H:1;;"), &error);
+    QVERIFY2(error.isEmpty(), qPrintable(error));
+    QCOMPARE(parsed.securityFamily, QStringLiteral("personal"));
+    QCOMPARE(parsed.securityHint, QStringLiteral("sae"));
+    QVERIFY(parsed.hidden);
+}
+
+void CommonTest::wifiQrRejectsInvalidData_data()
+{
+    QTest::addColumn<QString>("payload");
+    QTest::newRow("not-wifi") << QStringLiteral("https://example.com");
+    QTest::newRow("missing-ssid") << QStringLiteral("WIFI:T:WPA;P:password1;;");
+    QTest::newRow("enterprise")
+            << QStringLiteral("WIFI:T:WPA2-EAP;S:Office;P:password1;;");
+    QTest::newRow("short-password")
+            << QStringLiteral("WIFI:T:WPA;S:Private;P:short;;");
+    QTest::newRow("open-password")
+            << QStringLiteral("WIFI:T:nopass;S:Guest;P:not-empty;;");
+    QTest::newRow("duplicate-ssid")
+            << QStringLiteral("WIFI:T:nopass;S:One;S:Two;;");
+    QTest::newRow("bad-hidden")
+            << QStringLiteral("WIFI:T:nopass;S:Guest;H:perhaps;;");
+    QTest::newRow("trailing-escape")
+            << QStringLiteral("WIFI:T:nopass;S:Guest\\");
+}
+
+void CommonTest::wifiQrRejectsInvalidData()
+{
+    QFETCH(QString, payload);
+    QString error;
+    const NetworkRecord parsed = NetworkRecord::fromWifiQr(payload, &error);
+    QVERIFY(!error.isEmpty());
+    QVERIFY(parsed.securityFamily.isEmpty());
 }
 
 void CommonTest::fingerprintStability()
@@ -288,7 +379,13 @@ void CommonTest::reconcile_data()
     QTest::newRow("remote-missing") << "remote-missing" << int(Reconciler::RemoteMissing);
     QTest::newRow("blocked") << "blocked" << int(Reconciler::Blocked);
     QTest::newRow("tombstone") << "tombstone" << int(Reconciler::RemoveLocal);
-    QTest::newRow("re-added") << "re-added" << int(Reconciler::UploadLocal);
+    QTest::newRow("re-added") << "re-added" << int(Reconciler::NewLocalDecision);
+    QTest::newRow("re-added-approved") << "re-added-approved" << int(Reconciler::UploadLocal);
+    QTest::newRow("re-added-blocked") << "re-added-blocked" << int(Reconciler::Blocked);
+    QTest::newRow("newer-deletion") << "newer-deletion" << int(Reconciler::RemoveLocal);
+    QTest::newRow("deleted-absent") << "deleted-absent" << int(Reconciler::AdoptMatching);
+    QTest::newRow("remote-re-added") << "remote-re-added" << int(Reconciler::ApplyRemote);
+    QTest::newRow("remote-re-added-blocked") << "remote-re-added-blocked" << int(Reconciler::Blocked);
 }
 
 void CommonTest::reconcile()
@@ -324,12 +421,73 @@ void CommonTest::reconcile()
     } else if (scenario == QLatin1String("tombstone")) {
         remote.tombstone = true; remote.passphrase.clear();
         input.base = &base; input.local = &local; input.remote = &remote; input.locallyBlocked = true;
-    } else if (scenario == QLatin1String("re-added")) {
+    } else if (scenario.startsWith(QLatin1String("re-added"))
+               || scenario == QLatin1String("newer-deletion")) {
         base.tombstone = true; base.passphrase.clear();
         remote = base;
-        input.base = &base; input.local = &local; input.remote = &remote; input.locallyBlocked = true;
+        input.base = &base; input.local = &local; input.remote = &remote;
+        input.approvedLocal = scenario == QLatin1String("re-added-approved");
+        input.locallyBlocked = scenario == QLatin1String("re-added-blocked");
+        if (scenario == QLatin1String("newer-deletion")) {
+            remote.revision = QUuid::createUuid().toString();
+            input.approvedLocal = true;
+            input.locallyBlocked = true;
+        }
+    } else if (scenario == QLatin1String("deleted-absent")) {
+        base.tombstone = true; base.passphrase.clear(); remote = base;
+        input.base = &base; input.remote = &remote;
+    } else if (scenario.startsWith(QLatin1String("remote-re-added"))) {
+        base.tombstone = true; base.passphrase.clear();
+        remote.parentRevision = base.revision;
+        remote.revision = QUuid::createUuid().toString();
+        input.base = &base; input.remote = &remote;
+        input.locallyBlocked = scenario.endsWith(QLatin1String("blocked"));
     }
     QCOMPARE(int(Reconciler::reconcile(input).action), expected);
+}
+
+void CommonTest::readditionLifecycle()
+{
+    NetworkRecord base = record();
+    NetworkRecord local = base;
+    NetworkRecord remote = base;
+    remote.tombstone = true;
+    remote.passphrase.clear();
+    remote.parentRevision = base.revision;
+    remote.revision = QUuid::createUuid().toString();
+    Reconciler::Input input;
+    input.base = &base; input.local = &local; input.remote = &remote;
+    // An offline device's old profile must not resurrect a deletion.
+    QCOMPARE(Reconciler::reconcile(input).action, Reconciler::RemoveLocal);
+    base = remote;
+    input.local = nullptr;
+    QCOMPARE(Reconciler::reconcile(input).action, Reconciler::AdoptMatching);
+    input.local = &local;
+    QCOMPARE(Reconciler::reconcile(input).action, Reconciler::NewLocalDecision);
+    input.locallyBlocked = true;
+    QCOMPARE(Reconciler::reconcile(input).action, Reconciler::Blocked);
+    input.locallyBlocked = false;
+    input.approvedLocal = true;
+    QCOMPARE(Reconciler::reconcile(input).action, Reconciler::UploadLocal);
+    // Another device that applied the deletion restores the approved revival.
+    remote = local;
+    remote.parentRevision = base.revision;
+    remote.revision = QUuid::createUuid().toString();
+    input.local = nullptr;
+    input.approvedLocal = false;
+    QCOMPARE(Reconciler::reconcile(input).action, Reconciler::ApplyRemote);
+}
+
+void CommonTest::completedDeletionVisibility()
+{
+    NetworkRecord value = record();
+    QVERIFY(!Reconciler::isCompletedDeletion(value, false, false));
+    value.tombstone = true;
+    value.passphrase.clear();
+    QVERIFY(Reconciler::isCompletedDeletion(value, false, false));
+    QVERIFY(!Reconciler::isCompletedDeletion(value, true, false));
+    QVERIFY(!Reconciler::isCompletedDeletion(value, false, true));
+    QVERIFY(!Reconciler::isCompletedDeletion(value, true, true));
 }
 
 void CommonTest::atomicPrivateState()

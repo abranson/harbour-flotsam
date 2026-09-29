@@ -21,17 +21,39 @@ Page {
         contentHeight: content.height
 
         PullDownMenu {
+            // Pulley selection starts at the bottom: QR is reached first.
             MenuItem {
-                text: network.blocked ? "Synchronize this network" : "Keep only on this device"
-                onClicked: network.blocked ? controller.unblock(networkId) : controller.block(networkId)
+                text: "Forget everywhere"
+                enabled: !controller.busy && !controller.status.syncing && !network.deleted
+                onClicked: remorse.execute("Forgetting everywhere", function() {
+                    controller.forgetEverywhere(networkId)
+                    pageStack.pop()
+                })
             }
             MenuItem {
-                text: "Show Wi-Fi QR code"
-                enabled: network.qrAvailable && !network.conflict
-                onClicked: pageStack.push(Qt.resolvedUrl("QrPage.qml"), {
-                    networkId: networkId,
-                    networkName: network.displayName
-                })
+                visible: network.pendingDecision || network.blocked
+                enabled: !controller.busy
+                text: network.readded ? "Sync again with Nextcloud" : "Sync with Nextcloud"
+                onClicked: {
+                    if (network.pendingDecision) {
+                        controller.newNetworkChoice(networkId, "sync")
+                    } else {
+                        controller.unblock(networkId)
+                    }
+                }
+            }
+            MenuItem {
+                visible: !network.blocked && !network.deleted
+                enabled: !controller.busy
+                text: network.presentLocally === false
+                      ? "Keep off this device" : "Keep only on this device"
+                onClicked: {
+                    if (network.pendingDecision) {
+                        controller.newNetworkChoice(networkId, "keep")
+                    } else {
+                        controller.block(networkId)
+                    }
+                }
             }
             MenuItem {
                 text: "Edit"
@@ -39,6 +61,14 @@ Page {
                 onClicked: pageStack.push(Qt.resolvedUrl("EditPage.qml"), {
                     networkId: networkId,
                     networkData: network
+                })
+            }
+            MenuItem {
+                text: "Show Wi-Fi QR code"
+                enabled: network.qrAvailable && !network.conflict
+                onClicked: pageStack.push(Qt.resolvedUrl("QrPage.qml"), {
+                    networkId: networkId,
+                    networkName: network.displayName
                 })
             }
         }
@@ -50,7 +80,18 @@ Page {
 
             PageHeader { title: network.displayName || "Wi-Fi network" }
 
+            SectionHeader { text: "Synchronization" }
             DetailItem { label: "Status"; value: network.category || "" }
+            Label {
+                x: Theme.horizontalPageMargin
+                width: parent.width - 2 * x
+                visible: network.readded && network.pendingDecision
+                text: "Sync this network again? It was previously forgotten everywhere. Pull down to sync it or keep it only here."
+                color: Theme.highlightColor
+                wrapMode: Text.Wrap
+            }
+
+            SectionHeader { text: "Wi-Fi settings" }
             DetailItem { label: "Security"; value: network.securityFamily || "" }
             DetailItem { label: "Hidden"; value: network.hidden ? "Yes" : "No" }
             DetailItem { label: "Connect automatically"; value: network.autoconnect ? "Yes" : "No" }
@@ -143,23 +184,17 @@ Page {
                 onClicked: controller.resolveForgotten(networkId, "keep-off")
             }
 
-            Button {
-                id: forgetButton
-
-                anchors.horizontalCenter: parent.horizontalCenter
-                text: "Forget everywhere"
-                color: Theme.errorColor
-                onClicked: remorse.execute(forgetButton, "Forgetting everywhere", function() {
-                    controller.forgetEverywhere(networkId)
-                    pageStack.pop()
-                })
-            }
         }
 
         VerticalScrollDecorator {}
     }
 
     RemorsePopup { id: remorse }
+
+    Connections {
+        target: controller
+        onNetworksChanged: controller.loadDetails(networkId, revealPassword)
+    }
 
     Component.onCompleted: controller.loadDetails(networkId, false)
 }

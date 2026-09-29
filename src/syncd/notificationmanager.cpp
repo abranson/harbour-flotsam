@@ -31,6 +31,28 @@ QString remoteCall(const QString &token, const QString &action)
     return call;
 }
 
+QString encodedArgument(const QVariant &argument)
+{
+    QByteArray data;
+    QDataStream stream(&data, QIODevice::WriteOnly);
+    stream << argument;
+    return QString::fromLatin1(data.toBase64());
+}
+
+QString openNetworkCall(const QString &deduplicationKey)
+{
+    const int separator = deduplicationKey.indexOf(QLatin1Char(':'));
+    const QString networkId = separator >= 0
+            ? deduplicationKey.mid(separator + 1) : QString();
+    const QStringList uris = QStringList()
+            << QStringLiteral("flotsam://network/%1").arg(networkId);
+    return QStringLiteral("uk.co.nationalfantastic.harbour-flotsam "
+                          "/uk/co/nationalfantastic/harbour_flotsam "
+                          "org.freedesktop.Application Open %1 %2")
+            .arg(encodedArgument(QVariant::fromValue(uris)),
+                 encodedArgument(QVariant::fromValue(QVariantMap())));
+}
+
 }
 
 namespace Flotsam {
@@ -53,13 +75,15 @@ NotificationManager::NotificationManager(QObject *parent)
 
 void NotificationManager::showNewNetwork(const QString &deduplicationKey,
                                          const QString &token,
-                                         const QString &displayName)
+                                         const QString &displayName, bool readded)
 {
     QString safeName = displayName;
     safeName.replace(QRegularExpression(QStringLiteral("[\\x00-\\x1f\\x7f-\\x9f]")),
                      QStringLiteral(" "));
-    show(deduplicationKey, QStringLiteral("New Wi-Fi network found"),
-         QStringLiteral("Would you like to sync '%1'?").arg(safeName),
+    show(deduplicationKey, readded ? QStringLiteral("Wi-Fi network added again")
+                                 : QStringLiteral("New Wi-Fi network found"),
+         (readded ? QStringLiteral("Would you like to sync '%1' again?")
+                  : QStringLiteral("Would you like to sync '%1'?")).arg(safeName),
          QStringList() << QStringLiteral("sync:%1").arg(token) << QStringLiteral("Sync")
                        << QStringLiteral("keep:%1").arg(token) << QStringLiteral("Keep only here"),
          QStringLiteral("New Wi-Fi network found"),
@@ -88,8 +112,13 @@ void NotificationManager::show(const QString &deduplicationKey, const QString &s
     hints.insert(QStringLiteral("x-nemo-preview-summary"), previewSummary);
     hints.insert(QStringLiteral("x-nemo-preview-body"), previewBody);
     hints.insert(QStringLiteral("desktop-entry"), QStringLiteral("harbour-flotsam"));
-    for (int i = 0; i + 1 < actions.size(); i += 2) {
-        const QString actionKey = actions.at(i);
+    hints.insert(QStringLiteral("x-nemo-remote-action-default"),
+                 openNetworkCall(deduplicationKey));
+    QStringList notificationActions = QStringList()
+            << QStringLiteral("default") << QString();
+    notificationActions.append(actions);
+    for (int i = 0; i + 1 < notificationActions.size(); i += 2) {
+        const QString actionKey = notificationActions.at(i);
         const int separator = actionKey.indexOf(QLatin1Char(':'));
         if (separator > 0) {
             hints.insert(QStringLiteral("x-nemo-remote-action-") + actionKey,
@@ -100,7 +129,8 @@ void NotificationManager::show(const QString &deduplicationKey, const QString &s
     QDBusPendingCall call = notifications.asyncCall(
             QStringLiteral("Notify"), QStringLiteral("Flotsam"),
             m_notificationIds.value(deduplicationKey, 0),
-            QStringLiteral("harbour-flotsam"), summary, body, actions, hints, -1);
+            QStringLiteral("harbour-flotsam"), summary, body,
+            notificationActions, hints, -1);
     QDBusPendingCallWatcher *watcher = new QDBusPendingCallWatcher(call, this);
     watcher->setProperty("deduplicationKey", deduplicationKey);
     connect(watcher, &QDBusPendingCallWatcher::finished,

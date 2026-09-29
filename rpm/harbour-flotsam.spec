@@ -4,13 +4,15 @@ Version:    0.1.0
 Release:    1
 Group:      Qt/Qt
 License:    BSD-3-Clause
-URL:        https://github.com/harbour-flotsam/harbour-flotsam
+URL:        https://github.com/abranson/harbour-flotsam
 Source0:    %{name}-%{version}.tar.bz2
 
 Requires:   sailfishsilica-qt5
 Requires:   qt5-qtdeclarative-qtquick
 Requires:   connman-qt5
 Requires:   sailfish-components-accounts-qt5
+Requires:   qt5-qtdeclarative-import-multimedia
+Requires:   qt5-qtmultimedia-plugin-mediaservice-gstcamerabin
 Requires:   qr-filter-qml-plugin
 Requires:   sailjail
 Requires:   sailjail-permissions
@@ -42,6 +44,7 @@ rm -rf %{buildroot}
 
 chmod 0755 %{buildroot}%{_datadir}/harbour-flotsam/qml
 chmod 0755 %{buildroot}%{_datadir}/harbour-flotsam/qml/pages
+chmod 0755 %{buildroot}%{_datadir}/harbour-flotsam/qml/images
 install -d -m 0755 %{buildroot}%{_datadir}/licenses/%{name}
 install -m 0644 LICENSE %{buildroot}%{_datadir}/licenses/%{name}/LICENSE
 
@@ -51,6 +54,10 @@ install -D -m 0644 data/Flotsam.permission \
     %{buildroot}%{_sysconfdir}/sailjail/permissions/Flotsam.permission
 install -D -m 0644 data/icons/harbour-flotsam.svg \
     %{buildroot}%{_datadir}/icons/hicolor/scalable/apps/harbour-flotsam.svg
+for size in 86 108 128 172; do
+    install -D -m 0644 data/icons/${size}x${size}/harbour-flotsam.png \
+        %{buildroot}%{_datadir}/icons/hicolor/${size}x${size}/apps/harbour-flotsam.png
+done
 
 install -D -m 0644 data/systemd/user/harbour-flotsam-syncd.service \
     %{buildroot}%{_userunitdir}/harbour-flotsam-syncd.service
@@ -95,6 +102,10 @@ systemctl daemon-reload >/dev/null 2>&1 || :
 %{_datadir}/applications/harbour-flotsam.desktop
 %config %{_sysconfdir}/sailjail/permissions/Flotsam.permission
 %{_datadir}/icons/hicolor/scalable/apps/harbour-flotsam.svg
+%{_datadir}/icons/hicolor/86x86/apps/harbour-flotsam.png
+%{_datadir}/icons/hicolor/108x108/apps/harbour-flotsam.png
+%{_datadir}/icons/hicolor/128x128/apps/harbour-flotsam.png
+%{_datadir}/icons/hicolor/172x172/apps/harbour-flotsam.png
 %{_userunitdir}/harbour-flotsam-syncd.service
 %{_userunitdir}/user-session.target.wants/harbour-flotsam-syncd.service
 %{_unitdir}/harbour-flotsam-connman-helper.service

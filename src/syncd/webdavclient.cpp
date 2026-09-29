@@ -82,6 +82,9 @@ QNetworkRequest WebDavClient::requestFor(const QString &relativePath) const
     QNetworkRequest request(urlFor(relativePath));
     request.setRawHeader("User-Agent", "harbour-flotsam/1");
     request.setRawHeader("Accept", "application/json, application/xml;q=0.9");
+    // Reuse GET ETags in If-Match on PUT. Compression can give the downloaded
+    // representation a different ETag from the stored WebDAV resource.
+    request.setRawHeader("Accept-Encoding", "identity");
     if (!m_credentials.accessToken.isEmpty()) {
         request.setRawHeader("Authorization", "Bearer " + m_credentials.accessToken.toUtf8());
     } else {

@@ -28,6 +28,7 @@ signals:
     void StatusChanged(const QVariantMap &status);
     void NetworksChanged();
     void OperationFailed(const QString &message);
+    void ImportFinished(bool success, const QString &message);
 };
 
 class AppController : public QObject
@@ -57,6 +58,8 @@ public:
     Q_INVOKABLE void loadQr(const QString &networkId);
     Q_INVOKABLE QString passphraseError(const QString &securityFamily,
                                         const QString &passphrase) const;
+    Q_INVOKABLE QVariantMap parseWifiQr(const QString &payload) const;
+    Q_INVOKABLE void importWifiQr(const QString &payload);
     Q_INVOKABLE void manualSync();
     Q_INVOKABLE void beginSetup(int accountId);
     Q_INVOKABLE void completeSetup(const QVariantList &selectedNetworkIds);
@@ -79,12 +82,14 @@ signals:
     void qrPayloadChanged();
     void errorChanged();
     void busyChanged();
+    void importFinished(bool success, const QString &message);
 
 private slots:
     void callFinished(QDBusPendingCallWatcher *watcher);
     void remoteStatusChanged(const QVariantMap &status);
     void remoteNetworksChanged();
     void remoteError(const QString &message);
+    void remoteImportFinished(bool success, const QString &message);
 
 private:
     void startStringCall(const QString &method, const QString &kind,

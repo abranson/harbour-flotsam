@@ -20,40 +20,29 @@ Page {
 
             PageHeader { title: "Flotsam" }
 
-            BackgroundItem {
-                width: parent.width
-                height: statusColumn.height + 2 * Theme.paddingMedium
-                onClicked: if (!controller.status.setupComplete) {
-                    pageStack.push(Qt.resolvedUrl("SetupPage.qml"))
-                }
+            SectionHeader { text: "Status" }
 
-                Column {
-                    id: statusColumn
-
-                    anchors {
-                        left: parent.left
-                        right: parent.right
-                        margins: Theme.horizontalPageMargin
-                        verticalCenter: parent.verticalCenter
-                    }
-                    Label {
-                        width: parent.width
-                        text: controller.status.setupComplete
-                              ? (controller.status.syncing ? "Synchronizing…" : "Wi-Fi sync")
-                              : "Set up Nextcloud sync"
-                        color: parent.parent.highlighted ? Theme.highlightColor : Theme.primaryColor
-                    }
-                    Label {
-                        width: parent.width
-                        text: controller.error || controller.status.lastError
-                              || controller.status.lastResult ||
-                              "Synchronize saved Wi-Fi networks through Nextcloud."
-                        color: parent.parent.highlighted ? Theme.secondaryHighlightColor : Theme.secondaryColor
-                        font.pixelSize: Theme.fontSizeSmall
-                        wrapMode: Text.Wrap
-                    }
-                }
+            Label {
+                x: Theme.horizontalPageMargin
+                width: parent.width - 2 * x
+                text: controller.status.setupComplete
+                      ? (controller.status.syncing ? "Synchronizing…" : "Up to date")
+                      : "Nextcloud sync is not set up"
+                color: Theme.primaryColor
             }
+
+            Label {
+                x: Theme.horizontalPageMargin
+                width: parent.width - 2 * x
+                text: controller.error || controller.status.lastError
+                      || controller.status.lastResult
+                      || "Saved Wi-Fi networks synchronize through Nextcloud."
+                color: Theme.secondaryColor
+                font.pixelSize: Theme.fontSizeSmall
+                wrapMode: Text.Wrap
+            }
+
+            SectionHeader { text: "Networks" }
         }
 
         PullDownMenu {
@@ -62,13 +51,19 @@ Page {
                 onClicked: pageStack.push(Qt.resolvedUrl("AboutPage.qml"))
             }
             MenuItem {
-                text: "Change Nextcloud account"
-                onClicked: pageStack.push(Qt.resolvedUrl("SetupPage.qml"), { switchingAccount: true })
+                text: controller.status.setupComplete ? "Change Nextcloud account" : "Set up Nextcloud sync"
+                onClicked: pageStack.push(Qt.resolvedUrl("SetupPage.qml"), {
+                    switchingAccount: controller.status.setupComplete
+                })
             }
             MenuItem {
                 text: "Sync now"
                 enabled: controller.status.setupComplete && !controller.status.syncing
                 onClicked: controller.manualSync()
+            }
+            MenuItem {
+                text: "Scan Wi-Fi QR code"
+                onClicked: pageStack.push(Qt.resolvedUrl("ScanPage.qml"))
             }
         }
 
@@ -77,11 +72,16 @@ Page {
             text: controller.status.setupComplete ? "No supported saved Wi-Fi networks" : "Setup required"
             hintText: controller.status.setupComplete
                       ? "Open, WEP, and personal WPA networks appear here."
-                      : "Choose an existing Nextcloud account to begin."
+                      : "Pull down to choose an existing Nextcloud account."
         }
 
         delegate: BackgroundItem {
             id: delegate
+
+            property color networkColor: modelData.category === "Synced"
+                                         ? "#43a047"
+                                         : modelData.category === "Pending"
+                                           ? "#e0a800" : "#d64b4b"
 
             width: ListView.view.width
             height: Theme.itemSizeMedium
@@ -93,11 +93,23 @@ Page {
                 })
             }
 
-            Column {
+            Icon {
+                id: wlanIcon
+
                 anchors {
                     left: parent.left
+                    leftMargin: Theme.horizontalPageMargin
+                    verticalCenter: parent.verticalCenter
+                }
+                source: "image://theme/icon-m-wlan?" + delegate.networkColor
+            }
+
+            Column {
+                anchors {
+                    left: wlanIcon.right
                     right: parent.right
-                    margins: Theme.horizontalPageMargin
+                    leftMargin: Theme.paddingMedium
+                    rightMargin: Theme.horizontalPageMargin
                     verticalCenter: parent.verticalCenter
                 }
                 Label {

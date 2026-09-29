@@ -1,14 +1,17 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+<svg xmlns="http://www.w3.org/2000/svg" width="86" height="86" viewBox="0 0 86 86">
   <defs>
-    <linearGradient id="sea" x1="0" y1="0" x2="1" y2="1">
+    <linearGradient id="sea" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="86" y2="86">
       <stop offset="0" stop-color="#36b7c9"/>
       <stop offset="1" stop-color="#145e8c"/>
     </linearGradient>
   </defs>
-  <rect x="12" y="12" width="232" height="232" rx="52" fill="url(#sea)"/>
-  <path d="M53 151c43-38 107-38 150 0" fill="none" stroke="#fff" stroke-width="18" stroke-linecap="round"/>
-  <path d="M79 177c28-24 70-24 98 0" fill="none" stroke="#fff" stroke-width="18" stroke-linecap="round"/>
-  <circle cx="128" cy="204" r="12" fill="#fff"/>
-  <path d="M79 85c14-21 42-29 65-18 10-10 28-8 35 5 21 0 35 15 35 33H64c0-10 6-17 15-20z" fill="#fff" opacity=".94"/>
+  <!-- Sailfish's standard opposing-rounded-corner base, from the official
+       icon template (CC BY 3.0, attribution waived by Jolla):
+       https://sailfishos.org/design/icons/ -->
+  <path d="M84.277 .3H43C19.417 .3 .3 19.418 .3 43v41.277c0 .786 .637 1.423 1.423 1.423H43c23.583 0 42.7-19.118 42.7-42.7V1.723C85.7 .937 85.063 .3 84.277 .3z" fill="url(#sea)"/>
+  <path d="M25 65c-8 0-14-6-14-14s6-14 13-14c1-12 11-20 22-15 8-2 16 3 18 11 8 0 14 7 14 16 0 9-7 16-16 16z" fill="#fff"/>
+  <path d="M27 44q17-15 34 0" fill="none" stroke="#000" stroke-width="4.5" stroke-linecap="round"/>
+  <path d="M33 51q11-10 22 0" fill="none" stroke="#000" stroke-width="4.5" stroke-linecap="round"/>
+  <circle cx="44" cy="59" r="3" fill="#000"/>
 </svg>

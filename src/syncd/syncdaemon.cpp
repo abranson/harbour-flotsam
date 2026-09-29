@@ -47,7 +47,7 @@ bool validNetworkId(const QString &networkId)
             && QRegularExpression(QStringLiteral("^[0-9a-f]{64}$")).match(networkId).hasMatch();
 }
 
-QString helperStatus(const QString &json, QString *message)
+QString helperStatus(const QString &json, QString *message, QString *path = nullptr)
 {
     const QJsonDocument document = QJsonDocument::fromJson(json.toUtf8());
     if (!document.isObject()) {
@@ -59,6 +59,9 @@ QString helperStatus(const QString &json, QString *message)
     const QJsonObject object = document.object();
     if (message) {
         *message = object.value(QStringLiteral("message")).toString();
+    }
+    if (path) {
+        *path = object.value(QStringLiteral("path")).toString();
     }
     return object.value(QStringLiteral("status")).toString();
 }
@@ -317,6 +320,14 @@ QString SyncDaemon::ListNetworks() const
     for (const QString &id : ids) {
         bool exists = false;
         const NetworkRecord record = recordForDisplay(id, &exists);
+        const bool outstandingWork = errors.contains(id) || conflicts.contains(id)
+                || forgotten.contains(id)
+                || m_state.value(QStringLiteral("pending")).toObject().contains(id)
+                || m_state.value(QStringLiteral("pendingTombstones")).toObject().contains(id);
+        if (exists && Reconciler::isCompletedDeletion(record, m_local.contains(id),
+                                                     outstandingWork)) {
+            continue;
+        }
         QJsonObject item;
         if (exists) {
             item = QJsonObject::fromVariantMap(record.toVariantMap(false));
@@ -331,6 +342,8 @@ QString SyncDaemon::ListNetworks() const
         item.insert(QStringLiteral("networkId"), id);
         item.insert(QStringLiteral("category"), categoryFor(id));
         item.insert(QStringLiteral("blocked"), isBlocked(id));
+        item.insert(QStringLiteral("pendingDecision"),
+                    m_state.value(QStringLiteral("pending")).toObject().contains(id));
         item.insert(QStringLiteral("presentLocally"), m_local.contains(id));
         item.insert(QStringLiteral("active"), m_local.contains(id)
                     && (m_local.value(id).state == QLatin1String("ready")
@@ -363,7 +376,11 @@ QString SyncDaemon::Details(const QString &networkId, bool revealSecret) const
     result.insert(QStringLiteral("networkId"), networkId);
     result.insert(QStringLiteral("category"), categoryFor(networkId));
     result.insert(QStringLiteral("blocked"), isBlocked(networkId));
+    result.insert(QStringLiteral("pendingDecision"),
+                  m_state.value(QStringLiteral("pending")).toObject().contains(networkId));
     result.insert(QStringLiteral("presentLocally"), m_local.contains(networkId));
+    result.insert(QStringLiteral("readded"), m_local.contains(networkId)
+                  && baseRecord(networkId).tombstone);
     result.insert(QStringLiteral("active"), m_local.contains(networkId)
                   && (m_local.value(networkId).state == QLatin1String("ready")
                       || m_local.value(networkId).state == QLatin1String("online")));
@@ -399,6 +416,46 @@ QString SyncDaemon::QrPayload(const QString &networkId) const
         return QString();
     }
     return record.qrPayload(nullptr);
+}
+
+void SyncDaemon::ImportWifiQr(const QString &payload)
+{
+    const auto fail = [this](const QString &message) {
+        reportError(message);
+        emit ImportFinished(false, message);
+    };
+
+    if (m_phase != Idle) {
+        fail(QStringLiteral("Wait for synchronization to finish"));
+        return;
+    }
+    QString error;
+    const NetworkRecord source = NetworkRecord::fromWifiQr(payload, &error);
+    if (!error.isEmpty()) {
+        fail(error);
+        return;
+    }
+    const QString id = source.networkId();
+    if (m_local.contains(id)) {
+        fail(QStringLiteral("This Wi-Fi network is already saved on this device"));
+        return;
+    }
+
+    bool hasBase = false;
+    const NetworkRecord base = baseRecord(id, &hasBase);
+    const NetworkRecord record = versioned(source, hasBase ? &base : nullptr, m_state);
+    QDBusInterface helper(QString::fromLatin1(HelperService), QString::fromLatin1(HelperPath),
+                          QString::fromLatin1(HelperInterface), QDBusConnection::systemBus());
+    QDBusPendingCallWatcher *watcher = new QDBusPendingCallWatcher(
+            helper.asyncCall(QStringLiteral("CompareAndApply"), QString(),
+                             QString::fromUtf8(record.toJsonData()), false), this);
+    watcher->setProperty("userOperation", QStringLiteral("import"));
+    watcher->setProperty("networkId", id);
+    watcher->setProperty("recordJson", QString::fromUtf8(record.toJsonData()));
+    m_phase = Applying;
+    emitChanged();
+    connect(watcher, &QDBusPendingCallWatcher::finished,
+            this, &SyncDaemon::mutationFinished);
 }
 
 void SyncDaemon::ManualSync()
@@ -791,10 +848,15 @@ void SyncDaemon::reconcileAll()
         case Reconciler::NoOp:
         case Reconciler::AdoptMatching:
             if (remotePtr) {
+                if (remotePtr->tombstone && (!basePtr || !basePtr->tombstone
+                        || basePtr->revision != remotePtr->revision)) {
+                    setListMembership(QStringLiteral("blocks"), id, false);
+                }
                 bases.insert(id, remotePtr->toJson());
                 storedEtags.insert(id, m_remoteEtags.value(id));
             }
             pending.remove(id);
+            setListMembership(QStringLiteral("approvedLocal"), id, false);
             conflicts.remove(id);
             forgotten.remove(id);
             {
@@ -922,12 +984,16 @@ void SyncDaemon::mutationFinished(QDBusPendingCallWatcher *watcher)
     QDBusPendingReply<QString> reply = *watcher;
     const QString userOperation = watcher->property("userOperation").toString();
     const QString userNetworkId = watcher->property("networkId").toString();
+    const QString userRecordJson = watcher->property("recordJson").toString();
     watcher->deleteLater();
     if (reply.isError()) {
         const QString message = reply.error().message();
         if (!userOperation.isEmpty()) {
             m_phase = Idle;
             reportError(message);
+            if (userOperation == QLatin1String("import")) {
+                emit ImportFinished(false, message);
+            }
             if (userOperation == QLatin1String("forget")) {
                 requestSync(QStringLiteral("pending tombstone"));
             }
@@ -940,19 +1006,56 @@ void SyncDaemon::mutationFinished(QDBusPendingCallWatcher *watcher)
         return;
     }
     QString message;
-    const QString status = helperStatus(reply.value(), &message);
+    QString path;
+    const QString status = helperStatus(reply.value(), &message, &path);
     if (!userOperation.isEmpty()) {
         m_phase = Idle;
         if (status == QLatin1String("Ok")) {
-            if (userOperation == QLatin1String("edit")) {
-                setListMembership(QStringLiteral("approvedLocal"), userNetworkId, true);
+            if (userOperation == QLatin1String("edit")
+                    || userOperation == QLatin1String("import")) {
+                // Editing or importing a previously deleted network does not
+                // grant permission to resurrect it on every device.
+                if (!baseRecord(userNetworkId).tombstone) {
+                    setListMembership(QStringLiteral("approvedLocal"), userNetworkId, true);
+                }
+            }
+            if (userOperation == QLatin1String("import")) {
+                setListMembership(QStringLiteral("blocks"), userNetworkId, false);
+                QJsonObject tombstones = m_state.value(
+                        QStringLiteral("pendingTombstones")).toObject();
+                tombstones.remove(userNetworkId);
+                m_state.insert(QStringLiteral("pendingTombstones"), tombstones);
+                clearAttention(userNetworkId);
+
+                QString recordError;
+                const NetworkRecord imported = NetworkRecord::fromJsonData(
+                        userRecordJson.toUtf8(), &recordError, true);
+                if (recordError.isEmpty()) {
+                    LocalNetwork local;
+                    local.record = imported;
+                    local.path = path;
+                    local.state = QStringLiteral("idle");
+                    m_local.insert(userNetworkId, local);
+                }
             }
             saveState();
             emitChanged();
-            requestSync(userOperation == QLatin1String("edit")
-                        ? QStringLiteral("network edited") : QStringLiteral("forget everywhere"));
+            if (userOperation == QLatin1String("import")) {
+                emit ImportFinished(true, QStringLiteral("Wi-Fi network added"));
+                if (m_state.value(QStringLiteral("setupComplete")).toBool()) {
+                    requestSync(QStringLiteral("QR network imported"));
+                }
+            } else {
+                requestSync(userOperation == QLatin1String("edit")
+                            ? QStringLiteral("network edited")
+                            : QStringLiteral("forget everywhere"));
+            }
         } else {
-            reportError(message.isEmpty() ? status : message);
+            const QString error = message.isEmpty() ? status : message;
+            reportError(error);
+            if (userOperation == QLatin1String("import")) {
+                emit ImportFinished(false, error);
+            }
             if (userOperation == QLatin1String("forget")) {
                 requestSync(QStringLiteral("pending tombstone"));
             }
@@ -972,6 +1075,8 @@ void SyncDaemon::mutationFinished(QDBusPendingCallWatcher *watcher)
         etags.insert(m_currentAction.id, m_currentAction.etag);
         m_state.insert(QStringLiteral("remoteEtags"), etags);
         if (m_currentAction.type == SyncAction::Remove && m_currentAction.record.tombstone) {
+            setListMembership(QStringLiteral("approvedLocal"), m_currentAction.id, false);
+            setListMembership(QStringLiteral("blocks"), m_currentAction.id, false);
             QJsonObject tombstones = m_state.value(QStringLiteral("pendingTombstones")).toObject();
             tombstones.remove(m_currentAction.id);
             m_state.insert(QStringLiteral("pendingTombstones"), tombstones);
@@ -1476,7 +1581,8 @@ void SyncDaemon::notifyAttention(const QString &networkId, const QString &kind, 
     saveState();
     const QString key = kind + QLatin1Char(':') + networkId;
     if (actions) {
-        m_notifications.showNewNetwork(key, token, recordForDisplay(networkId).displayName());
+        m_notifications.showNewNetwork(key, token, recordForDisplay(networkId).displayName(),
+                                       baseRecord(networkId).tombstone);
     } else {
         m_notifications.showAttention(key, kind);
     }

@@ -2,12 +2,13 @@
  "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
 <node name="/org/harbour/flotsam/Sync">
   <interface name="org.harbour.flotsam.Sync">
-    <annotation name="org.harbour.flotsam.InterfaceVersion" value="1"/>
+    <annotation name="org.harbour.flotsam.InterfaceVersion" value="2"/>
     <method name="Status"><arg name="status" type="a{sv}" direction="out"/></method>
     <method name="Accounts"><arg name="json" type="s" direction="out"/></method>
     <method name="ListNetworks"><arg name="json" type="s" direction="out"/></method>
     <method name="Details"><arg name="networkId" type="s" direction="in"/><arg name="revealSecret" type="b" direction="in"/><arg name="json" type="s" direction="out"/></method>
     <method name="QrPayload"><arg name="networkId" type="s" direction="in"/><arg name="payload" type="s" direction="out"/></method>
+    <method name="ImportWifiQr"><arg name="payload" type="s" direction="in"/></method>
     <method name="ManualSync"/>
     <method name="BeginSetup"><arg name="accountId" type="i" direction="in"/><arg name="reserved" type="b" direction="in"/></method>
     <method name="CompleteSetup"><arg name="selectedNetworkIds" type="as" direction="in"/></method>
@@ -23,5 +24,6 @@
     <signal name="StatusChanged"><arg name="status" type="a{sv}"/></signal>
     <signal name="NetworksChanged"/>
     <signal name="OperationFailed"><arg name="message" type="s"/></signal>
+    <signal name="ImportFinished"><arg name="success" type="b"/><arg name="message" type="s"/></signal>
   </interface>
 </node>

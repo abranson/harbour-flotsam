@@ -42,6 +42,7 @@ public slots:
     QString ListNetworks() const;
     QString Details(const QString &networkId, bool revealSecret) const;
     QString QrPayload(const QString &networkId) const;
+    void ImportWifiQr(const QString &payload);
     void ManualSync();
     void BeginSetup(int accountId, bool reserved);
     void CompleteSetup(const QStringList &selectedNetworkIds);
@@ -61,6 +62,7 @@ signals:
     void StatusChanged(const QVariantMap &status);
     void NetworksChanged();
     void OperationFailed(const QString &message);
+    void ImportFinished(bool success, const QString &message);
 
 private slots:
     void credentialsReady(const Flotsam::WebDavCredentials &credentials);

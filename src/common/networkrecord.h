@@ -54,6 +54,7 @@ public:
                                      const QByteArray &rawSsid,
                                      const QString &passphrase,
                                      QString *error = nullptr);
+    static NetworkRecord fromWifiQr(const QString &payload, QString *error = nullptr);
 
     static QString normalizeSecurityFamily(const QStringList &security);
     static QString normalizeSecurityHint(const QStringList &security);

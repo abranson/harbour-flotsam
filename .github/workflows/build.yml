@@ -1,0 +1,83 @@
+name: SailfishOS Build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Host tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install Qt test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y qtbase5-dev
+
+      - name: Build and run tests
+        run: |
+          set -euo pipefail
+          for suite in common webdav; do
+            mkdir -p "$RUNNER_TEMP/flotsam-tests/$suite"
+            (
+              cd "$RUNNER_TEMP/flotsam-tests/$suite"
+              qmake "$GITHUB_WORKSPACE/tests/$suite/$suite.pro"
+              make -j"$(nproc)"
+              ./tst_flotsam_"$suite"
+            )
+          done
+
+  build:
+    name: Sailfish OS aarch64 RPM
+    needs: test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      RELEASE: 5.2.0.15
+      ARCH: aarch64
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Prepare SDK
+        run: docker pull "coderus/sailfishos-platform-sdk:${RELEASE}"
+
+      - name: Build Sailfish OS packages
+        run: |
+          set -euo pipefail
+          mkdir -p RPMS
+          docker run --rm --privileged \
+            -e RELEASE -e ARCH \
+            -v "$PWD":/share \
+            "coderus/sailfishos-platform-sdk:${RELEASE}" \
+            bash -c '
+              set -euo pipefail
+              build_dir=$(mktemp -d /tmp/flotsam-build.XXXXXX)
+              cp -R /share/. "$build_dir/"
+              cd "$build_dir"
+              mb2 -t "SailfishOS-${RELEASE}-${ARCH}" --no-vcs-apply build -d
+              sudo cp -v RPMS/*.rpm /share/RPMS/
+            '
+
+      - name: Upload RPMs
+        uses: actions/upload-artifact@v4
+        with:
+          name: harbour-flotsam-${{ env.ARCH }}
+          path: RPMS/*.rpm
+          if-no-files-found: error

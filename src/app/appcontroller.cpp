@@ -44,6 +44,8 @@ AppController::AppController(QObject *parent)
             this, &AppController::remoteNetworksChanged);
     connect(m_interface, &SyncInterfaceProxy::OperationFailed,
             this, &AppController::remoteError);
+    connect(m_interface, &SyncInterfaceProxy::ImportFinished,
+            this, &AppController::remoteImportFinished);
     QTimer::singleShot(0, this, &AppController::refresh);
 }
 
@@ -129,7 +131,7 @@ void AppController::callFinished(QDBusPendingCallWatcher *watcher)
             m_status = reply.value();
             emit statusChanged();
         }
-    } else if (kind != QLatin1String("void")) {
+    } else if (kind != QLatin1String("void") && kind != QLatin1String("import")) {
         QDBusPendingReply<QString> reply = *watcher;
         if (reply.isError()) {
             setError(reply.error().message());
@@ -154,7 +156,10 @@ void AppController::callFinished(QDBusPendingCallWatcher *watcher)
         QDBusPendingReply<> reply = *watcher;
         if (reply.isError()) {
             setError(reply.error().message());
-        } else {
+            if (kind == QLatin1String("import")) {
+                emit importFinished(false, reply.error().message());
+            }
+        } else if (kind == QLatin1String("void")) {
             QTimer::singleShot(100, this, &AppController::refresh);
         }
     }
@@ -183,6 +188,33 @@ QString AppController::passphraseError(const QString &securityFamily,
     QString error;
     NetworkRecord::validatePassphrase(securityFamily, passphrase, &error);
     return error;
+}
+
+QVariantMap AppController::parseWifiQr(const QString &payload) const
+{
+    QString error;
+    const NetworkRecord record = NetworkRecord::fromWifiQr(payload, &error);
+    if (!error.isEmpty()) {
+        QVariantMap result;
+        result.insert(QStringLiteral("valid"), false);
+        result.insert(QStringLiteral("error"), error);
+        return result;
+    }
+    QVariantMap result = record.toVariantMap(false);
+    result.insert(QStringLiteral("valid"), true);
+    return result;
+}
+
+void AppController::importWifiQr(const QString &payload)
+{
+    setError(QString());
+    QDBusPendingCallWatcher *watcher = new QDBusPendingCallWatcher(
+            m_interface->asyncCall(QStringLiteral("ImportWifiQr"), payload), this);
+    watcher->setProperty("kind", QStringLiteral("import"));
+    ++m_pendingCalls;
+    emit busyChanged();
+    connect(watcher, &QDBusPendingCallWatcher::finished,
+            this, &AppController::callFinished);
 }
 
 void AppController::manualSync() { startVoidCall(QStringLiteral("ManualSync")); }
@@ -237,6 +269,16 @@ void AppController::remoteNetworksChanged()
 void AppController::remoteError(const QString &message)
 {
     setError(message);
+}
+
+void AppController::remoteImportFinished(bool success, const QString &message)
+{
+    if (!success) {
+        setError(message);
+    } else {
+        QTimer::singleShot(100, this, &AppController::refresh);
+    }
+    emit importFinished(success, message);
 }
 
 void AppController::setError(const QString &error)

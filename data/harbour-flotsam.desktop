@@ -4,10 +4,12 @@ Version=1.0
 Name=Flotsam
 X-Nemo-Application-Type=silica-qt5
 X-Nemo-Single-Instance=yes
+X-DBusActivatable=true
 Exec=/usr/bin/harbour-flotsam
 Icon=harbour-flotsam
 
 [X-Sailjail]
-Permissions=Flotsam
-OrganizationName=org.harbour
+Permissions=Flotsam;Camera
+OrganizationName=uk.co.nationalfantastic
 ApplicationName=harbour-flotsam
+ExecDBus=harbour-flotsam --prestart

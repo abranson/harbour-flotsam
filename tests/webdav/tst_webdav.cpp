@@ -53,6 +53,8 @@ private slots:
     void init();
     void createsFoldersAndFormat();
     void listsEtags();
+    void recordEtagRoundTrip_data();
+    void recordEtagRoundTrip();
     void conditionalPutRace();
     void malformedListing();
     void authenticationExpiry();
@@ -115,6 +117,35 @@ void WebDavTest::listsEtags()
     const QMap<QString, QString> result = qvariant_cast<QMap<QString, QString> >(listed.takeFirst().at(0));
     QCOMPARE(result.value(QString::fromLatin1(id)), QStringLiteral("\"one\""));
     QVERIFY(server.requests.first().contains("Depth: 1"));
+}
+
+void WebDavTest::recordEtagRoundTrip_data()
+{
+    QTest::addColumn<QByteArray>("etag");
+    QTest::newRow("ordinary") << QByteArrayLiteral("\"stored-version\"");
+    // ETags are opaque: a literal suffix must not be stripped by the client.
+    QTest::newRow("opaque-suffix") << QByteArrayLiteral("\"stored-version-gzip\"");
+}
+
+void WebDavTest::recordEtagRoundTrip()
+{
+    QFETCH(QByteArray, etag);
+    const QString id(64, QLatin1Char('d'));
+    server.responses.enqueue("HTTP/1.1 200 OK\r\nContent-Length: 2\r\nETag: "
+                             + etag + "\r\n\r\n{}");
+    QSignalSpy received(client, &WebDavClient::recordReceived);
+    client->getRecord(id);
+    QTRY_COMPARE(received.count(), 1);
+    QCOMPARE(server.requests.size(), 1);
+    QVERIFY(server.requests.first().contains("Accept-Encoding: identity\r\n"));
+    QCOMPARE(received.first().at(2).toString(), QString::fromLatin1(etag));
+
+    QSignalSpy written(client, &WebDavClient::recordWritten);
+    client->putRecord(id, QByteArrayLiteral("{}"), received.first().at(2).toString(), false);
+    QTRY_COMPARE(written.count(), 1);
+    QCOMPARE(server.requests.size(), 2);
+    QVERIFY(server.requests.last().contains("If-Match: " + etag + "\r\n"));
+    QVERIFY(!server.requests.last().contains("If-None-Match:"));
 }
 
 void WebDavTest::conditionalPutRace()

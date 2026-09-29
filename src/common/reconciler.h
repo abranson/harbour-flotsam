@@ -41,6 +41,8 @@ public:
     };
 
     static Result reconcile(const Input &input);
+    static bool isCompletedDeletion(const NetworkRecord &record, bool presentLocally,
+                                    bool outstandingWork);
     static QString actionName(Action action);
 };
 

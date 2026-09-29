@@ -5,6 +5,17 @@ import QtQuick 2.6
 import Sailfish.Silica 1.0
 
 CoverBackground {
+    Image {
+        anchors.centerIn: parent
+        width: parent.width
+        height: width
+        source: "../images/cover-background.svg"
+        sourceSize.width: width
+        sourceSize.height: height
+        fillMode: Image.PreserveAspectFit
+        opacity: 0.1
+    }
+
     Label {
         anchors {
             left: parent.left

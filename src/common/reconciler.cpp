@@ -12,9 +12,11 @@ Reconciler::Result Reconciler::reconcile(const Input &input)
 {
     Result result;
     if (input.remote && input.remote->tombstone) {
-        if (input.base && input.base->tombstone && input.local) {
-            result.action = UploadLocal;
-            result.reason = QStringLiteral("The network was explicitly re-added after deletion");
+        if (input.base && input.base->tombstone && input.local
+                && input.base->revision == input.remote->revision) {
+            result.action = input.locallyBlocked ? Blocked
+                    : input.approvedLocal ? UploadLocal : NewLocalDecision;
+            result.reason = QStringLiteral("Choose whether to sync the re-added network");
         } else {
             result.action = input.local ? RemoveLocal : AdoptMatching;
             result.reason = QStringLiteral("A remote tombstone wins on every device");
@@ -52,8 +54,8 @@ Reconciler::Result Reconciler::reconcile(const Input &input)
     }
     if (!input.local) {
         if (input.base->tombstone) {
-            result.action = AdoptMatching;
-            result.reason = QStringLiteral("The tombstone is already applied locally");
+            result.action = ApplyRemote;
+            result.reason = QStringLiteral("The network was re-added on another device");
         } else {
             result.action = ForgottenDecision;
             result.reason = QStringLiteral("The network was forgotten in Sailfish Settings");
@@ -79,6 +81,12 @@ Reconciler::Result Reconciler::reconcile(const Input &input)
         result.reason = QStringLiteral("Both sides changed from their common base");
     }
     return result;
+}
+
+bool Reconciler::isCompletedDeletion(const NetworkRecord &record, bool presentLocally,
+                                     bool outstandingWork)
+{
+    return record.tombstone && !presentLocally && !outstandingWork;
 }
 
 QString Reconciler::actionName(Action action)
