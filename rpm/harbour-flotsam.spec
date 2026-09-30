@@ -1,6 +1,6 @@
 Name:       harbour-flotsam
-Summary:    Flotsam connectivity and synchronization service
-Version:    0.1.1
+Summary:    Sync Wi-Fi networks between Sailfish OS devices through Nextcloud
+Version:    0.1.2
 Release:    1
 Group:      Qt/Qt
 License:    BSD-3-Clause
@@ -28,8 +28,32 @@ BuildRequires: pkgconfig(sailfishaccounts)
 BuildRequires: desktop-file-utils
 
 %description
-Flotsam is a Sailfish OS application with a user-session synchronization
-daemon and a privileged ConnMan integration helper.
+Flotsam keeps your saved Wi-Fi networks in sync between Sailfish OS devices
+using an existing Nextcloud account. Share network passwords, hidden-network
+settings and automatic connection preferences without entering them on each
+device.
+
+Choose which networks to sync or keep only on this device, resolve conflicting
+changes, and forget a network across your devices. You can also share a network
+as a Wi-Fi QR code or scan one with the camera to add it.
+
+Synchronization runs in the background. Wi-Fi passwords are stored in your
+Nextcloud account; your Nextcloud login stays in Sailfish's system account store.
+
+%if 0%{?_chum}
+Title: Flotsam
+Type: desktop-application
+DeveloperName: Andrew Branson
+Categories:
+ - Network
+ - Utility
+Custom:
+  Repo: https://github.com/abranson/harbour-flotsam
+PackageIcon: https://raw.githubusercontent.com/abranson/harbour-flotsam/main/data/icons/harbour-flotsam.svg
+Links:
+  Homepage: https://github.com/abranson/harbour-flotsam
+  Bugtracker: https://github.com/abranson/harbour-flotsam/issues
+%endif
 
 %prep
 %setup -q
@@ -126,6 +150,9 @@ systemctl daemon-reload >/dev/null 2>&1 || :
 %{_datadir}/dbus-1/interfaces/org.harbour.flotsam.Connman.xml
 
 %changelog
+* Wed Sep 30 2026 Andrew Branson <andrew.branson@jolla.com> - 0.1.2-1
+- Add SailfishOS:Chum metadata and describe Wi-Fi synchronization features.
+
 * Tue Sep 29 2026 Andrew Branson <andrew.branson@jolla.com> - 0.1.1-1
 - Restrict management to the authenticated sandboxed UI and protect local state.
 - Isolate ConnMan operations and require review after state migration.
