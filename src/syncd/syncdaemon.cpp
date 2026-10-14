@@ -162,7 +162,7 @@ bool SyncDaemon::initialize(QString *error)
     m_lastResult = m_state.value(QStringLiteral("lastResult")).toString();
     m_lastError = m_state.value(QStringLiteral("lastError")).toString();
     if (m_state.value(QStringLiteral("migrationNeedsReview")).toBool()) {
-        m_lastError = QStringLiteral("State moved to protected storage. Review pending changes, then use Sync now to resume.");
+        m_lastError = QStringLiteral("Sync paused after a security update. Review your networks, then use Sync now to resume.");
     }
     m_lastSync = QDateTime::fromString(m_state.value(QStringLiteral("lastSync")).toString(),
                                       Qt::ISODate);

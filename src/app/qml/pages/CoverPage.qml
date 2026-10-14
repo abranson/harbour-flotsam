@@ -24,6 +24,8 @@ CoverBackground {
             verticalCenter: parent.verticalCenter
         }
         text: controller.status.version === undefined ? "Service unavailable"
+              : (controller.error || controller.status.lastError) ? "Wi-Fi sync needs attention"
+              : !controller.status.setupComplete ? "Setup required"
               : controller.status.needsAttention
               ? controller.status.needsAttention + " need attention"
               : controller.status.syncing ? "Synchronizing Wi-Fi" : "Wi-Fi synchronized"

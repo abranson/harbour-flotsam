@@ -14,6 +14,19 @@
 #include <QDebug>
 #include <QFile>
 #include <QLockFile>
+#include <cerrno>
+#include <memory>
+#include <unistd.h>
+
+namespace {
+struct DirectoryFd {
+    int value = -1;
+    ~DirectoryFd() { if (value >= 0) close(value); }
+    QString lockPath() const {
+        return QStringLiteral("/proc/self/fd/%1/daemon.lock").arg(value);
+    }
+};
+}
 
 int main(int argc, char **argv)
 {
@@ -23,12 +36,30 @@ int main(int argc, char **argv)
 
     Flotsam::SyncDaemon daemon;
     QString error;
-    if (!Flotsam::Security::prepareUserDirectory(QStringLiteral("/var/lib/harbour-flotsam"), &error)) {
+    DirectoryFd directory;
+    directory.value = Flotsam::Security::openStateDirectory(&error);
+    if (directory.value < 0) {
         qCritical() << "Unable to prepare Flotsam state:" << error;
         return 1;
     }
-    QLockFile lock(Flotsam::Security::userDirectory(QStringLiteral("/var/lib/harbour-flotsam"))
-                   + QStringLiteral("/daemon.lock"));
+    // Also hold the previous lock during migration and for this daemon's
+    // lifetime, so an already-running old binary cannot write the source.
+    DirectoryFd previousDirectory;
+    previousDirectory.value = Flotsam::Security::openPreviousStateDirectory(&error);
+    std::unique_ptr<QLockFile> previousLock;
+    if (previousDirectory.value >= 0) {
+        previousLock.reset(new QLockFile(previousDirectory.lockPath()));
+        previousLock->setStaleLockTime(0);
+        if (!previousLock->tryLock()) {
+            qCritical() << "Another Flotsam daemon holds the previous state lock";
+            return 1;
+        }
+    } else if (errno != ENOENT) {
+        qCritical() << error;
+        return 1;
+    }
+    // Keep the validated directory pinned even if a home ancestor is renamed.
+    QLockFile lock(directory.lockPath());
     lock.setStaleLockTime(0);
     if (!lock.tryLock() || !daemon.initialize(&error)) {
         qCritical() << "Unable to initialize Flotsam:" << error;

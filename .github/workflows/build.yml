@@ -41,7 +41,7 @@ jobs:
             )
           done
           # Only temporary dummy files/peers; verifies the same-UID group boundary.
-          sudo "$RUNNER_TEMP/flotsam-tests/common/tst_flotsam_common" crossUidBoundary
+          sudo "$RUNNER_TEMP/flotsam-tests/common/tst_flotsam_common" crossUidBoundary atomicStateWithEffectiveGroup privilegedHomeDirectory
 
   build:
     name: Sailfish OS aarch64 RPM

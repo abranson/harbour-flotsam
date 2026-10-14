@@ -10,3 +10,4 @@ dbus-system.call org.harbour.flotsam.Connman=org.harbour.flotsam.Identity1.Verif
 blacklist /run/harbour-flotsam
 blacklist /run/harbour-flotsam-helper
 blacklist /var/lib/harbour-flotsam
+blacklist ${HOME}/.local/share/system/privileged/harbour-flotsam

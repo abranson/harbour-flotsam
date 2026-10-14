@@ -13,13 +13,13 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonParseError>
-#include <QSaveFile>
 #include <QStandardPaths>
 #include <QUuid>
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #include <cerrno>
+#include <cstring>
 
 namespace {
 
@@ -41,6 +41,12 @@ struct DirectoryFd {
     ~DirectoryFd() { if (value >= 0) close(value); }
 };
 
+struct TemporaryState {
+    int directory = -1;
+    QByteArray name;
+    ~TemporaryState() { if (!name.isEmpty()) unlinkat(directory, name.constData(), 0); }
+};
+
 int openDirectoryWithoutLinks(const QString &path)
 {
     if (!path.startsWith(QLatin1Char('/'))) return -1;
@@ -49,11 +55,14 @@ int openDirectoryWithoutLinks(const QString &path)
         if (fd < 0) return -1;
         if (component == QLatin1String(".") || component == QLatin1String("..")) {
             close(fd);
+            errno = EINVAL;
             return -1;
         }
         const int next = openat(fd, QFile::encodeName(component).constData(),
                                 O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+        const int savedError = errno;
         close(fd);
+        errno = savedError;
         fd = next;
     }
     return fd;
@@ -63,20 +72,23 @@ int openDirectoryWithoutLinks(const QString &path)
 
 namespace Flotsam {
 
-AtomicState::AtomicState(const QString &path, const QString &legacyPath)
+AtomicState::AtomicState(const QString &path, const QString &legacyPath,
+                         const QString &previousProtectedPath)
     : m_path(path.isEmpty() ? defaultPath() : path)
     , m_protected(path.isEmpty())
     , m_legacyPath(path.isEmpty()
                    ? QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation)
                      + QStringLiteral("/harbour-flotsam/state.json") : legacyPath)
+    , m_previousProtectedPath(path.isEmpty()
+                              ? Security::userDirectory(QStringLiteral("/var/lib/harbour-flotsam"))
+                                + QStringLiteral("/state.json") : previousProtectedPath)
     , m_object(initialObject())
 {
 }
 
 QString AtomicState::defaultPath()
 {
-    return Security::userDirectory(QStringLiteral("/var/lib/harbour-flotsam"))
-            + QStringLiteral("/state.json");
+    return Security::stateDirectory() + QStringLiteral("/state.json");
 }
 
 QJsonObject AtomicState::initialObject()
@@ -123,41 +135,47 @@ void AtomicState::setObject(const QJsonObject &object)
 
 bool AtomicState::load(QString *error)
 {
-    if (m_protected && !Security::prepareUserDirectory(
-                QStringLiteral("/var/lib/harbour-flotsam"), error)) return false;
-    const QString legacy = m_legacyPath;
-    struct stat existing;
-    const bool exists = lstat(QFile::encodeName(m_path).constData(), &existing) == 0;
-    if (!exists && errno != ENOENT) {
-        setError(error, QStringLiteral("Cannot inspect protected state"));
-        return false;
+    // Inspect all supported locations through anchored descriptors. Never choose
+    // between two copies by timestamps, and never treat inaccessible state as a
+    // fresh installation. An interrupted migration therefore fails closed.
+    DirectoryFd directories[3];
+    const QString paths[] = {m_path, m_previousProtectedPath, m_legacyPath};
+    int selected = -1;
+    for (int i = 0; i < 3; ++i) {
+        if (paths[i].isEmpty()) continue;
+        if (m_protected && i == 0) {
+            directories[i].value = Security::openStateDirectory(error);
+            if (directories[i].value < 0) return false;
+        } else if (m_protected && i == 1) {
+            directories[i].value = Security::openPreviousStateDirectory(error);
+        } else {
+            directories[i].value = openDirectoryWithoutLinks(QFileInfo(paths[i]).absolutePath());
+        }
+        if (directories[i].value < 0) {
+            if (errno == ENOENT) continue;
+            setError(error, QStringLiteral("Cannot safely open a state directory"));
+            return false;
+        }
+        struct stat existing;
+        if (fstatat(directories[i].value, QFile::encodeName(QFileInfo(paths[i]).fileName()).constData(),
+                    &existing, AT_SYMLINK_NOFOLLOW) != 0) {
+            if (errno == ENOENT) continue;
+            setError(error, QStringLiteral("Cannot inspect state"));
+            return false;
+        }
+        if (selected >= 0) {
+            setError(error, QStringLiteral("Multiple Flotsam state files exist; review the copies before starting Flotsam"));
+            return false;
+        }
+        selected = i;
     }
-    const bool legacyExists = !legacy.isEmpty()
-            && lstat(QFile::encodeName(legacy).constData(), &existing) == 0;
-    if (!legacy.isEmpty() && !legacyExists && errno != ENOENT) {
-        setError(error, QStringLiteral("Cannot inspect legacy state"));
-        return false;
-    }
-    if (exists && legacyExists) {
-        setError(error, QStringLiteral("Legacy state remains outside protected storage; review and remove that copy before starting Flotsam"));
-        return false;
-    }
-    if (!exists && !legacyExists) {
+    if (selected < 0) {
         m_object = initialObject();
         return true;
     }
-    const QString source = exists ? m_path : legacy;
-    // Anchor every path component with openat/O_NOFOLLOW. A concurrent rename
-    // of a user-controlled legacy parent must not redirect privileged file I/O.
-    const QFileInfo sourceInfo(source);
-    DirectoryFd sourceDirectory;
-    sourceDirectory.value = openDirectoryWithoutLinks(sourceInfo.absolutePath());
-    if (sourceDirectory.value < 0) {
-        setError(error, QStringLiteral("State path contains a symlink"));
-        return false;
-    }
-    const QByteArray sourceName = QFile::encodeName(sourceInfo.fileName());
-    const int fd = openat(sourceDirectory.value, sourceName.constData(),
+    const int sourceDirectory = directories[selected].value;
+    const QByteArray sourceName = QFile::encodeName(QFileInfo(paths[selected]).fileName());
+    const int fd = openat(sourceDirectory, sourceName.constData(),
                          O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK);
     struct stat st;
     if (fd < 0 || fstat(fd, &st) != 0 || !safeFile(st)) {
@@ -188,17 +206,20 @@ bool AtomicState::load(QString *error)
         return false;
     }
     m_object = object;
-    if (!exists) {
-        // Legacy state was writable by any unrestricted same-UID application.
-        // Preserve it, but require a deliberate manual sync before replaying it.
-        m_object.insert(QStringLiteral("migrationNeedsReview"), true);
-        m_object.insert(QStringLiteral("notificationTokens"), QJsonObject());
+    if (selected != 0) {
+        if (selected == 2) {
+            // Only the original, unprotected store requires a new review.
+            // Relocation of protected state preserves every decision and flag.
+            m_object.insert(QStringLiteral("migrationNeedsReview"), true);
+            m_object.insert(QStringLiteral("notificationTokens"), QJsonObject());
+        }
         if (!save(error)) return false;
         struct stat current;
-        if (fstatat(sourceDirectory.value, sourceName.constData(), &current, AT_SYMLINK_NOFOLLOW) != 0
+        if (fstatat(sourceDirectory, sourceName.constData(), &current, AT_SYMLINK_NOFOLLOW) != 0
                 || current.st_dev != st.st_dev || current.st_ino != st.st_ino
-                || unlinkat(sourceDirectory.value, sourceName.constData(), 0) != 0) {
-            setError(error, QStringLiteral("State was migrated, but the legacy copy could not safely be removed"));
+                || unlinkat(sourceDirectory, sourceName.constData(), 0) != 0
+                || fsync(sourceDirectory) != 0) {
+            setError(error, QStringLiteral("State was migrated, but the previous copy could not safely be removed"));
             return false;
         }
     }
@@ -207,33 +228,36 @@ bool AtomicState::load(QString *error)
 
 bool AtomicState::save(QString *error) const
 {
-    if (m_protected && !Security::prepareUserDirectory(
-                QStringLiteral("/var/lib/harbour-flotsam"), error)) return false;
     const QFileInfo info(m_path);
     QDir parent = info.dir();
-    if (!parent.exists() && !parent.mkpath(QStringLiteral("."))) {
-        setError(error, QStringLiteral("Cannot create the state directory"));
+    DirectoryFd directory;
+    if (m_protected) {
+        directory.value = Security::openStateDirectory(error);
+        if (directory.value < 0) return false;
+    } else {
+        if (!parent.exists() && !parent.mkpath(QStringLiteral("."))) {
+            setError(error, QStringLiteral("Cannot create the state directory"));
+            return false;
+        }
+        if (parent.canonicalPath() != parent.absolutePath()) {
+            setError(error, QStringLiteral("Unsafe state directory"));
+            return false;
+        }
+        directory.value = openDirectoryWithoutLinks(parent.absolutePath());
+        if (directory.value >= 0 && fchmod(directory.value, 0700) != 0) {
+            setError(error, QStringLiteral("Cannot protect state directory"));
+            return false;
+        }
+    }
+    if (directory.value < 0) {
+        setError(error, QStringLiteral("Cannot open state directory without symlinks"));
         return false;
     }
-    if (parent.canonicalPath() != parent.absolutePath()
-            || !QFile::setPermissions(parent.absolutePath(), QFileDevice::ReadOwner
-                          | QFileDevice::WriteOwner | QFileDevice::ExeOwner)) {
-        setError(error, QStringLiteral("Unsafe state directory"));
-        return false;
-    }
+    const QByteArray name = QFile::encodeName(info.fileName());
     struct stat st;
-    if (lstat(QFile::encodeName(m_path).constData(), &st) == 0 && !safeFile(st)) {
+    const int inspected = fstatat(directory.value, name.constData(), &st, AT_SYMLINK_NOFOLLOW);
+    if ((inspected == 0 && !safeFile(st)) || (inspected != 0 && errno != ENOENT)) {
         setError(error, QStringLiteral("Unsafe existing state file"));
-        return false;
-    }
-
-    QSaveFile file(m_path);
-    if (!file.open(QIODevice::WriteOnly)) {
-        setError(error, file.errorString());
-        return false;
-    }
-    if (!file.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner)) {
-        setError(error, QStringLiteral("Cannot protect state permissions"));
         return false;
     }
     const QByteArray data = QJsonDocument(m_object).toJson(QJsonDocument::Compact);
@@ -241,11 +265,48 @@ bool AtomicState::save(QString *error) const
         setError(error, QStringLiteral("State file exceeds 1 MiB"));
         return false;
     }
-    if (file.write(data) != data.size() || !file.commit()) {
+
+    // Qt 5.6 QSaveFile checks access(W_OK) with the real GID, which cannot
+    // traverse our privileged-group parent. Do not relax that boundary or
+    // change process credentials: openat/renameat use the effective GID.
+    // Anchor both temporary creation and atomic replacement to the same dir.
+    TemporaryState temporary;
+    temporary.directory = directory.value;
+    const QByteArray candidate = ".state-" + QUuid::createUuid().toByteArray();
+    const int fd = openat(directory.value, candidate.constData(),
+                          O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
+    if (fd < 0) {
+        setError(error, QStringLiteral("Cannot create temporary state: %1")
+                 .arg(QString::fromLocal8Bit(strerror(errno))));
+        return false;
+    }
+    temporary.name = candidate; // Only remove a temporary file we created.
+    QFile file;
+    if (!file.open(fd, QIODevice::WriteOnly, QFileDevice::AutoCloseHandle)) {
+        close(fd);
         setError(error, file.errorString());
         return false;
     }
-    QFile::setPermissions(m_path, QFileDevice::ReadOwner | QFileDevice::WriteOwner);
+    if (fchmod(fd, 0600) != 0) {
+        setError(error, QStringLiteral("Cannot protect state permissions"));
+        return false;
+    }
+    if (file.write(data) != data.size() || !file.flush()) {
+        setError(error, file.errorString());
+        return false;
+    }
+    if (fsync(fd) != 0 || renameat(directory.value, temporary.name.constData(),
+                                   directory.value, name.constData()) != 0) {
+        setError(error, QStringLiteral("Cannot commit state: %1")
+                 .arg(QString::fromLocal8Bit(strerror(errno))));
+        return false;
+    }
+    temporary.name.clear();
+    // Make the new directory entry durable before migration removes its source.
+    if (fsync(directory.value) != 0) {
+        setError(error, QStringLiteral("Cannot flush state directory"));
+        return false;
+    }
     return true;
 }
 

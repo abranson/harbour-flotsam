@@ -27,6 +27,8 @@ Page {
                 x: Theme.horizontalPageMargin
                 width: parent.width - 2 * x
                 text: !page.statusAvailable ? (controller.busy ? "Connecting…" : "Service unavailable")
+                      : (controller.error || controller.status.lastError || controller.status.needsAttention)
+                      ? "Needs attention"
                       : controller.status.setupComplete
                       ? (controller.status.syncing ? "Synchronizing…" : "Up to date")
                       : "Nextcloud sync is not set up"

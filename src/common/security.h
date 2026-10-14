@@ -9,7 +9,11 @@ namespace Security {
 QString userDirectory(const QString &root);
 QString helperSocket();
 bool trustedDirectory(const QString &path, bool writableByGroup);
-bool prepareUserDirectory(const QString &root, QString *error);
+QString stateDirectory();
+int openStateDirectory(QString *error);
+// Explicit identities permit isolated filesystem fixtures; production uses NSS.
+int openPrivilegedStateDirectory(const QString &home, uint owner, uint group, QString *error);
+int openPreviousStateDirectory(QString *error);
 bool validHelperEndpoint();
 bool initializeDaemon();
 }

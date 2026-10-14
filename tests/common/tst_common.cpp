@@ -28,8 +28,11 @@
 #include <unistd.h>
 #include <grp.h>
 #include <sys/stat.h>
+#include <sys/resource.h>
+#include <csignal>
 #include <QFileInfo>
 #include <QJsonDocument>
+#include <QLockFile>
 #include <QTemporaryDir>
 #include <QtTest>
 #include <QUuid>
@@ -131,8 +134,13 @@ private slots:
     void readditionLifecycle();
     void completedDeletionVisibility();
     void atomicPrivateState();
+    void atomicStateWithEffectiveGroup();
     void unsafeStateRejected();
     void legacyStateMigration();
+    void protectedStateMigration_data();
+    void protectedStateMigration();
+    void migrationFailurePreservesSource();
+    void privilegedHomeDirectory();
     void helperRejectsMessageBus();
     void privateBusAllowsOnlyExplicitApi();
     void privateBusRejectsUnsafeSocket();
@@ -163,6 +171,7 @@ void CommonTest::privilegedUiPackaging()
     QVERIFY(!rules.contains("whitelist /run/"));
     QVERIFY(rules.contains("\nblacklist /run/harbour-flotsam-helper\n"));
     QVERIFY(rules.contains("\nblacklist /var/lib/harbour-flotsam\n"));
+    QVERIFY(rules.contains("\nblacklist ${HOME}/.local/share/system/privileged/harbour-flotsam\n"));
     QVERIFY(!rules.contains("privileged-data"));
     QVERIFY(!rules.contains("Accounts.permission"));
 
@@ -559,6 +568,42 @@ void CommonTest::atomicPrivateState()
     QVERIFY(!loaded.object().contains(QStringLiteral("warningAcknowledged")));
 }
 
+void CommonTest::atomicStateWithEffectiveGroup()
+{
+    if (geteuid() != 0) QSKIP("Run this test in the isolated root container fixture");
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    QVERIFY(chmod(QFile::encodeName(directory.path()).constData(), 0755) == 0);
+    const QString guard = directory.path() + QStringLiteral("/guard");
+    const QString user = guard + QStringLiteral("/user");
+    QVERIFY(QDir().mkpath(user));
+    QVERIFY(chown(QFile::encodeName(guard).constData(), 0, 29995) == 0);
+    QVERIFY(chmod(QFile::encodeName(guard).constData(), 0770) == 0);
+    QVERIFY(chown(QFile::encodeName(user).constData(), 100001, 29995) == 0);
+    QVERIFY(chmod(QFile::encodeName(user).constData(), 0700) == 0);
+    const QString path = user + QStringLiteral("/state.json");
+    QProcess writer;
+    writer.start(QCoreApplication::applicationFilePath(),
+                 {QStringLiteral("--state-save-probe"), path});
+    QVERIFY(writer.waitForStarted());
+    QVERIFY(writer.waitForFinished());
+    QCOMPARE(writer.exitStatus(), QProcess::NormalExit);
+    const QByteArray output = writer.readAllStandardError();
+    QVERIFY2(writer.exitCode() == 0, output.constData());
+    struct stat st;
+    QVERIFY(lstat(QFile::encodeName(path).constData(), &st) == 0);
+    QCOMPARE(st.st_uid, uid_t(100001));
+    QCOMPARE(st.st_gid, gid_t(29995));
+    QCOMPARE(st.st_mode & 07777, mode_t(0600));
+    QCOMPARE(QDir(user).entryList(QDir::Files | QDir::Hidden), QStringList() << QStringLiteral("state.json"));
+    QProcess reader;
+    reader.start(QCoreApplication::applicationFilePath(),
+                 {QStringLiteral("--state-probe"), path, QStringLiteral("ordinary")});
+    QVERIFY(reader.waitForStarted());
+    QVERIFY(reader.waitForFinished());
+    QCOMPARE(reader.exitCode(), 0); // Same UID without the effective group still cannot access it.
+}
+
 void CommonTest::unsafeStateRejected()
 {
     QTemporaryDir directory;
@@ -617,6 +662,171 @@ void CommonTest::legacyStateMigration()
     AtomicState protectedCopy(current);
     QVERIFY(protectedCopy.load());
     QCOMPARE(protectedCopy.object(), migration.object());
+}
+
+void CommonTest::protectedStateMigration_data()
+{
+    QTest::addColumn<int>("pause");
+    QTest::newRow("pause-absent") << -1;
+    QTest::newRow("pause-false") << 0;
+    QTest::newRow("pause-true") << 1;
+}
+
+void CommonTest::protectedStateMigration()
+{
+    QFETCH(int, pause);
+    QTemporaryDir directory;
+    const QString oldPath = directory.path() + QStringLiteral("/var/state.json");
+    const QString newPath = directory.path() + QStringLiteral("/home/state.json");
+    AtomicState old(oldPath);
+    QJsonObject object = old.object();
+    object.insert(QStringLiteral("accountId"), 42);
+    object.insert(QStringLiteral("setupComplete"), true);
+    object.insert(QStringLiteral("lastSync"), QStringLiteral("2026-09-29T14:47:45Z"));
+    object.insert(QStringLiteral("blocks"), QJsonArray{QStringLiteral("blocked-fixture")});
+    object.insert(QStringLiteral("notificationTokens"), QJsonObject{{QStringLiteral("token"), true}});
+    const QJsonObject candidates{{QStringLiteral("fixture"), record().toJson()}};
+    for (const QString &key : {QStringLiteral("bases"), QStringLiteral("pending"),
+                              QStringLiteral("conflicts"), QStringLiteral("forgotten"),
+                              QStringLiteral("resolutions"), QStringLiteral("pendingTombstones"),
+                              QStringLiteral("remoteEtags")}) object.insert(key, candidates);
+    if (pause >= 0) object.insert(QStringLiteral("migrationNeedsReview"), pause == 1);
+    old.setObject(object);
+    QVERIFY(old.save());
+    AtomicState moved(newPath, QString(), oldPath);
+    QString error;
+    QVERIFY2(moved.load(&error), qPrintable(error));
+    QCOMPARE(moved.object(), object); // Includes credentials, revisions and unknown fields.
+    QVERIFY(!QFile::exists(oldPath));
+    QVERIFY2(moved.load(&error), qPrintable(error)); // Idempotent restart.
+    QCOMPARE(moved.object(), object);
+    QVERIFY(old.save()); // Interrupted cleanup must not choose either copy.
+    QVERIFY(!moved.load());
+    AtomicState destination(newPath);
+    QVERIFY(destination.load());
+    QCOMPARE(destination.object(), object);
+    QVERIFY(old.load());
+    QCOMPARE(old.object(), object);
+}
+
+void CommonTest::migrationFailurePreservesSource()
+{
+    QTemporaryDir directory;
+    const QString oldPath = directory.path() + QStringLiteral("/old/state.json");
+    const QString newPath = directory.path() + QStringLiteral("/new/state.json");
+    AtomicState old(oldPath);
+    QVERIFY(old.save());
+    const QJsonObject original = old.object();
+    // A failed destination open cannot remove the source.
+    QFile obstacle(directory.path() + QStringLiteral("/new"));
+    QVERIFY(obstacle.open(QIODevice::WriteOnly));
+    obstacle.close();
+    AtomicState moved(newPath, QString(), oldPath);
+    QVERIFY(!moved.load());
+    QVERIFY(old.load());
+    QCOMPARE(old.object(), original);
+    QVERIFY(obstacle.remove());
+    // Reject linked sources, including symlinked ancestors.
+    const QString alias = directory.path() + QStringLiteral("/alias");
+    QVERIFY(QFile::link(directory.path() + QStringLiteral("/old"), alias));
+    AtomicState linked(newPath, QString(), alias + QStringLiteral("/state.json"));
+    QVERIFY(!linked.load());
+    QVERIFY(!QFile::exists(newPath));
+    QVERIFY(QFile::remove(alias));
+    QVERIFY(::link(QFile::encodeName(oldPath).constData(), QFile::encodeName(alias).constData()) == 0);
+    QVERIFY(!moved.load());
+    QVERIFY(QFile::remove(alias));
+    // Partial-write failure during migration preserves the original object.
+    struct rlimit originalLimit;
+    QVERIFY(getrlimit(RLIMIT_FSIZE, &originalLimit) == 0);
+    struct rlimit shortLimit = originalLimit;
+    shortLimit.rlim_cur = 128;
+    const auto previousSignal = signal(SIGXFSZ, SIG_IGN);
+    QVERIFY(previousSignal != SIG_ERR);
+    QVERIFY(setrlimit(RLIMIT_FSIZE, &shortLimit) == 0);
+    const bool migrated = moved.load();
+    const int restored = setrlimit(RLIMIT_FSIZE, &originalLimit);
+    signal(SIGXFSZ, previousSignal);
+    QCOMPARE(restored, 0);
+    QVERIFY(!migrated);
+    QVERIFY(!QFile::exists(newPath));
+    QVERIFY(old.load());
+    QCOMPARE(old.object(), original);
+    QVERIFY(QDir(directory.path() + QStringLiteral("/new")).entryList(QDir::Files | QDir::Hidden).isEmpty());
+    // Ambiguous protected/unprotected sources remain untouched.
+    const QString legacyPath = directory.path() + QStringLiteral("/legacy/state.json");
+    AtomicState legacy(legacyPath);
+    QVERIFY(legacy.save());
+    AtomicState ambiguous(newPath, legacyPath, oldPath);
+    QVERIFY(!ambiguous.load());
+    QVERIFY(QFile::exists(legacyPath));
+    QVERIFY(QFile::exists(oldPath));
+    QVERIFY(!QFile::exists(newPath));
+    QVERIFY(QFile::remove(legacyPath));
+    // Malformed/newer-schema sources are not discarded or migrated.
+    QFile invalid(oldPath);
+    QVERIFY(invalid.open(QIODevice::WriteOnly | QIODevice::Truncate));
+    invalid.write("{broken");
+    invalid.close();
+    QVERIFY(!moved.load());
+    QVERIFY(QFile::exists(oldPath));
+    QVERIFY(!QFile::exists(newPath));
+    QJsonObject newer = original;
+    newer.insert(QStringLiteral("schemaVersion"), 2);
+    old.setObject(newer);
+    QVERIFY(old.save());
+    QVERIFY(!moved.load());
+    QVERIFY(QFile::exists(oldPath));
+    QVERIFY(!QFile::exists(newPath));
+}
+
+void CommonTest::privilegedHomeDirectory()
+{
+    if (geteuid() != 0) QSKIP("Run this test in the isolated root container fixture");
+    QTemporaryDir directory;
+    QVERIFY(chmod(QFile::encodeName(directory.path()).constData(), 0755) == 0);
+    const QString home = directory.path() + QStringLiteral("/home");
+    const QString gate = home + QStringLiteral("/.local/share/system/privileged");
+    QVERIFY(QDir().mkpath(gate));
+    QVERIFY(chown(QFile::encodeName(home).constData(), 100001, 100001) == 0);
+    QVERIFY(chown(QFile::encodeName(gate).constData(), 29996, 29995) == 0);
+    QVERIFY(chmod(QFile::encodeName(gate).constData(), 0770) == 0);
+    auto probe = [&](bool allowed) {
+        QProcess child;
+        child.start(QCoreApplication::applicationFilePath(),
+                    {QStringLiteral("--home-state-probe"), home, allowed ? QStringLiteral("allow") : QStringLiteral("deny")});
+        return child.waitForStarted() && child.waitForFinished()
+                && child.exitStatus() == QProcess::NormalExit && child.exitCode() == 0;
+    };
+    QVERIFY(probe(true));
+    QVERIFY(probe(true)); // Existing directory, no permission repair needed.
+    // Ordinary same-UID code cannot read it.
+    QProcess reader;
+    reader.start(QCoreApplication::applicationFilePath(),
+                 {QStringLiteral("--state-probe"), gate + QStringLiteral("/harbour-flotsam/state.json"), QStringLiteral("ordinary")});
+    QVERIFY(reader.waitForStarted());
+    QVERIFY(reader.waitForFinished());
+    QCOMPARE(reader.exitCode(), 0);
+    const QString appDirectory = gate + QStringLiteral("/harbour-flotsam");
+    QVERIFY(chmod(QFile::encodeName(appDirectory).constData(), 0770) == 0);
+    QVERIFY(probe(false)); // Do not repair or use an unexpectedly exposed child.
+    QVERIFY(chmod(QFile::encodeName(appDirectory).constData(), 0700) == 0);
+    QVERIFY(chown(QFile::encodeName(appDirectory).constData(), 29996, 29995) == 0);
+    QVERIFY(probe(false));
+    QVERIFY(chown(QFile::encodeName(appDirectory).constData(), 100001, 29995) == 0);
+    QVERIFY(chown(QFile::encodeName(gate).constData(), 100001, 29995) == 0);
+    QVERIFY(probe(false)); // A user-created substitute gate is not trusted.
+    QVERIFY(chown(QFile::encodeName(gate).constData(), 29996, 29995) == 0);
+    QVERIFY(chmod(QFile::encodeName(gate).constData(), 0777) == 0);
+    QVERIFY(probe(false));
+    QVERIFY(chmod(QFile::encodeName(gate).constData(), 0770) == 0);
+    const QString moved = gate + QStringLiteral("-moved");
+    QVERIFY(QDir().rename(gate, moved));
+    QVERIFY(QFile::link(moved, gate));
+    QVERIFY(probe(false)); // No symlink traversal, even to an otherwise valid gate.
+    QVERIFY(QFile::remove(gate));
+    QVERIFY(probe(false)); // Never manufacture a missing shared gate.
+    QVERIFY(!QFile::exists(gate));
 }
 
 void CommonTest::helperRejectsMessageBus()
@@ -1042,6 +1252,11 @@ void CommonTest::notificationTokensRejectStaleActions()
 
 int main(int argc, char **argv)
 {
+    if ((argc == 3 && QByteArray(argv[1]) == "--state-save-probe")
+            || (argc == 4 && QByteArray(argv[1]) == "--home-state-probe")) {
+        if (getuid() != 0 || setgroups(0, nullptr) != 0
+                || setresgid(100001, 29995, 29995) != 0 || setuid(100001) != 0) return 4;
+    }
     if ((argc == 7 && QByteArray(argv[1]) == "--probe")
             || (argc == 4 && QByteArray(argv[1]) == "--state-probe")) {
         const bool privileged = QByteArray(argv[argc - 1]) == "privileged";
@@ -1050,6 +1265,58 @@ int main(int argc, char **argv)
     }
     QCoreApplication app(argc, argv);
     const QStringList args = app.arguments();
+    if (args.size() == 4 && args.at(1) == QLatin1String("--home-state-probe")) {
+        QString error;
+        const int fd = Security::openPrivilegedStateDirectory(args.at(2), 29996, 29995, &error);
+        if (args.at(3) == QLatin1String("deny")) {
+            if (fd >= 0) close(fd);
+            return fd < 0 ? 0 : 31;
+        }
+        if (fd < 0) return 32;
+        bool locksValid = false;
+        {
+            QLockFile lock(QStringLiteral("/proc/self/fd/%1/daemon.lock").arg(fd));
+            lock.setStaleLockTime(0);
+            QLockFile second(args.at(2) + QStringLiteral("/.local/share/system/privileged/harbour-flotsam/daemon.lock"));
+            second.setStaleLockTime(0);
+            locksValid = lock.tryLock() && !second.tryLock();
+        }
+        close(fd);
+        if (!locksValid) return 33;
+        AtomicState state(args.at(2) + QStringLiteral("/.local/share/system/privileged/harbour-flotsam/state.json"));
+        return state.save() && state.load() ? 0 : 34;
+    }
+    if (args.size() == 3 && args.at(1) == QLatin1String("--state-save-probe")) {
+        AtomicState state(args.at(2));
+        QString error;
+        if (!state.save(&error)) { qCritical() << "Initial save:" << error; return 21; }
+        // Match the production setgid daemon: access() uses the real GID and
+        // cannot traverse the guard, while normal file I/O uses the effective GID.
+        if (::access(QFile::encodeName(state.path()).constData(), W_OK) == 0) return 22;
+        QJsonObject changed = state.object();
+        changed.insert(QStringLiteral("deviceLabel"), QStringLiteral("updated fixture"));
+        state.setObject(changed);
+        if (!state.save(&error)) { qCritical() << "Replacement save:" << error; return 23; }
+        AtomicState loaded(state.path());
+        if (!loaded.load(&error) || loaded.object() != changed) return 24;
+        QJsonObject oversized = changed;
+        oversized.insert(QStringLiteral("padding"), QString(1024 * 1024, QLatin1Char('x')));
+        state.setObject(oversized);
+        if (state.save(&error) || !loaded.load(&error) || loaded.object() != changed) return 25;
+        // Force a partial write to the temporary file. The committed state
+        // must remain readable and unchanged, with no temporary file left over.
+        struct rlimit originalLimit;
+        if (getrlimit(RLIMIT_FSIZE, &originalLimit) != 0) return 27;
+        struct rlimit shortFileLimit = originalLimit;
+        shortFileLimit.rlim_cur = 128;
+        if (signal(SIGXFSZ, SIG_IGN) == SIG_ERR
+                || setrlimit(RLIMIT_FSIZE, &shortFileLimit) != 0) return 28;
+        state.setObject(changed);
+        const bool saved = state.save(&error);
+        if (setrlimit(RLIMIT_FSIZE, &originalLimit) != 0) return 29;
+        if (saved || !loaded.load(&error) || loaded.object() != changed) return 30;
+        return getgid() == 100001 && getegid() == 29995 ? 0 : 26;
+    }
     if (args.size() == 4 && args.at(1) == QLatin1String("--system-ui-probe")) {
         QDBusConnection connection = QDBusConnection::connectToBus(args.at(2), QStringLiteral("system-ui-probe"));
         const QDBusReply<QString> owner = connection.interface()->serviceOwner(QStringLiteral("org.harbour.flotsam.Sync"));

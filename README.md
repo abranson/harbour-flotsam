@@ -127,8 +127,12 @@ provides activation/Ping only. Notifications open the app for decisions.
   there is no abstract or TCP socket. No network operation is exported on the
   system bus; the public identity check returns only a boolean and adds no
   capabilities or access to secrets.
-- State: `/var/lib/harbour-flotsam/<uid>/state.json` (0600), with the same
-  root-owned privileged-group 0770 parent and per-user 0700 directory.
+- State: `~/.local/share/system/privileged/harbour-flotsam/state.json` (0600),
+  in a user-owned 0700 directory behind Sailfish's existing
+  `privileged:privileged` 0770 directory. The daemon resolves the home through
+  the user database, validates the platform gate's ownership and permissions,
+  and uses directory descriptors without following symlinks. It never creates
+  or changes the shared platform directory.
 
 The desktop entry requests Sailjail's `Privileged` permission, so the trusted UI
 runs as the device user with the privileged group, not as root. Sandboxing stays
@@ -139,11 +143,16 @@ Launch the app through its desktop entry. The daemon stays
 setgid, not root; it clears caller-supplied environment overrides before Qt
 initialization, disables dumps, and serializes startup with a protected lock.
 
-On upgrade, valid legacy state is copied atomically to protected storage and the
-old file is removed only after a successful save. Invalid, linked, oversized,
-or ambiguously duplicated state stops startup. Migration preserves pending
-decisions but pauses automatic reconciliation until **Sync now** is selected
-after reviewing them. Uninstall does not delete state, ConnMan profiles, or cloud
+On upgrade, state from `/var/lib/harbour-flotsam/<uid>/state.json` is copied
+atomically to the per-user location, flushed to disk, and only then removed from
+the old location. All settings, cached records, pending decisions and any
+existing review pause are preserved; relocation alone does not request a new
+review. Both old and new daemon locks are held while the old directory exists.
+The original unprotected `~/.local/share/harbour-flotsam/state.json` is also
+supported, but importing it requires review and **Sync now** before automatic
+reconciliation resumes. Invalid, linked, oversized, inaccessible, or ambiguously
+duplicated state stops startup without choosing or overwriting a copy.
+Uninstall does not delete state, ConnMan profiles, or cloud
 records. Never downgrade to an old daemon against a hardened installation.
 
 This boundary excludes ordinary processes sharing the device UID; it does not
