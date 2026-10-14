@@ -1,6 +1,6 @@
 Name:       harbour-flotsam
 Summary:    Sync Wi-Fi networks between Sailfish OS devices through Nextcloud
-Version:    0.1.2
+Version:    0.1.3
 Release:    1
 Group:      Qt/Qt
 License:    BSD-3-Clause
@@ -144,6 +144,11 @@ systemctl daemon-reload >/dev/null 2>&1 || :
 %{_datadir}/dbus-1/interfaces/org.harbour.flotsam.Connman.xml
 
 %changelog
+* Wed Oct 14 2026 Andrew Branson <andrew.branson@jolla.com> - 0.1.3-1
+- Move sync state to Sailfish privileged user storage with safe migration.
+- Fix saving state from the setgid daemon and display synchronization errors.
+- Test migration, failed writes and filesystem access boundaries.
+
 * Wed Sep 30 2026 Andrew Branson <andrew.branson@jolla.com> - 0.1.2-1
 - Add SailfishOS:Chum metadata and describe Wi-Fi synchronization features.
 
